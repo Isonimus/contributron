@@ -117,7 +117,7 @@ and the rendered state matches the expected output. Fully offline and determinis
 Rules, without AI. The engine proves itself on actions whose correctness is checkable.
 
 - Persistent workflow instances with recorded state transitions, surviving restart.
-- Hardcoded rules in ordinary TypeScript. Still no DSL.
+- Hardcoded rules in ordinary Rust. Still no DSL.
 - Non-AI actions: notify the operator, label, comment.
 - The policy engine, with capabilities declared per workflow and checked before dispatch.
 - Audit record carrying all three identities.
