@@ -34,6 +34,11 @@ confidence-threshold = 0.93
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# A `{ path = ... }` dependency inside this workspace carries no version requirement, which
+# cargo-deny reads as a wildcard. These crates are `publish = false`, so a version on them
+# would be a number nothing consumes and nobody keeps true. This relaxes path dependencies
+# only: a wildcard on a registry crate, which is what the rule is for, still fails.
+allow-wildcard-paths = true
 # A wildcard or git dependency makes a build unreproducible, so both are refused here rather
 # than noticed later when two machines disagree about what was built.
 deny = []

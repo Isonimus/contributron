@@ -51,9 +51,6 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
   `@isonimus/stele`, surfaced here by CodeQL `js/incomplete-sanitization` on the first run.
   Patching the vendored copy would diverge from the toolkit, so the fix belongs upstream:
   stele PR #1, open 2026-11-23. Close this line by re-vendoring once it is released.
-- [audit] CI green currently proves the toolchain is wired and nothing more:
-  `crates/domain` holds no types and `cargo test` runs zero tests. The badges must not be
-  read as evidence of working behaviour until the first slice lands tests behind them.
 - [audit] Confirm stele rule R11 (every scripts/*-verify.mjs wired into package.json)
   behaves correctly once package.json exists; the install predates it.
 
@@ -76,6 +73,12 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
   verifiable by the provider rather than asserted by our own audit record. Cheap, and it
   converts part of invariant 6 from review-only into something a third party can check
   (ADR-0005).
+- [feature] A capture reads the first 100 review threads of a pull request and truncates
+  beyond that silently (`THREAD_PAGE_SIZE` in `crates/github/src/capture.rs`). Slice 0007
+  observes threads and does not claim to paginate them, so the truncation is knowing rather
+  than accidental, but an observation that quietly omits open threads would make a later rule
+  act on a pull request it has misread. Paginate the connection, or refuse a capture whose
+  `pageInfo.hasNextPage` is true rather than record a partial one.
 
 ## Resolved
 

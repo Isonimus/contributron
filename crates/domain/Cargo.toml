@@ -1,13 +1,22 @@
 [package]
 name = "contributron-domain"
 version = "0.0.0"
-description = "Provider-independent domain types: events, actors, workflow state."
 publish = false
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+
+# Deliberately short, and it is the point of this crate rather than an accident. Standing
+# invariant 1 (CLAUDE.md) says no domain type names a provider concept; the enforcement is
+# that nothing here can reach a provider client, which crates/domain/tests/boundary.rs
+# asserts over the resolved graph.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+sha2 = { workspace = true }
 
 [lints]
 workspace = true

@@ -161,3 +161,65 @@ and describe one repository's pull requests from a recording, and nothing more.
 
 <!-- Filled at merge, in past tense, confirming each Definition-of-Done scenario was met or
      recording the deviation. This is the freeze step. -->
+
+Shipped as three crates with the dependency direction stated in the design:
+`contributron-domain` (no in-workspace dependency), `contributron-github` (on the domain) and
+`contributron-cli` (on both). Twenty-three tests, `cargo fmt --all --check` clean,
+`cargo clippy --workspace --all-targets --all-features` clean with no `#[allow]` added
+anywhere, and `cargo deny check all` reporting advisories, bans, licences and sources all ok.
+
+All seven Definition-of-Done scenarios were met. Two carry a note.
+
+**Scenario 1 was first met by a test that could not have failed.** The fixture holds one
+resolved thread and one unresolved one, so `unresolved_thread_count` returning the *resolved*
+threads instead would also have returned 1. This was found by mutating the implementation and
+re-running the suite: inverting the filter left all eighteen tests of the time green. A
+symmetric fixture cannot detect a symmetric error. The fixture is unchanged, since the
+scenario describes it; a further case in `crates/github/tests/normalize.rs` appends a third,
+unresolved thread and asserts two of three, and the inverted filter now fails it. Eight other
+mutations were run against the rest of the suite (an omitted agent field, a defaulted missing
+field, a null thread state read as unresolved, provider thread order left unsorted, a wrong
+nibble in the hex encoder, a dropped title, a total-thread count in place of the unresolved
+one, an accepted empty author login) and every one was caught by the test that claims the
+behaviour.
+
+**Scenario 7's command takes two arguments the slice did not name.** The verification table
+wrote `capture --repo <owner/name>`; the command shipped as
+`capture --repo <owner/name> --pull-request <n> --out <path>`, because a pull request number
+is not derivable and a capture that printed to standard output could not be kept as a
+fixture. Run twice against the live API. `Isonimus/stele#1` captured and normalized but holds
+no review threads, so it proved nothing about the thread node shape; `cli/cli#15071` was then
+captured and holds two threads, one resolved and one unresolved, with exactly the fields
+`id` and `isResolved`. The hand-authored fixtures therefore do describe GitHub's current
+response.
+
+Three things were learned that the design did not anticipate.
+
+`octocrab::Octocrab::graphql` returns the `data` member and turns `errors` into an error, so
+the adapter rebuilds the response envelope before writing a fixture. That was kept rather
+than worked around, because a fixture carrying `data` is byte-comparable with what
+`gh api graphql` writes, so a fixture can be produced without this command and still be read
+by the same normalizer.
+
+`octocrab`'s default features compile two cryptographic backends: `ring` for TLS and
+`aws-lc-rs`, a C library, for the JSON Web Token signing a GitHub App needs. No App
+credential exists yet. Taking only the features in use removed `jsonwebtoken` and the C build
+and cut the dependency graph from 241 crates to 226; the JWT feature returns with the
+credential item in `LEDGER.md`. Certificate verification is the host's trust store via
+`rustls-native-certs`, confirmed by the two live captures succeeding.
+
+`cargo deny check bans` caught a defect in this repository's own dependency declarations:
+`sha2 = "0"` permits 0.10 to 0.11, which for a `0.x` crate is a breaking upgrade, and it had
+resolved a second copy of the entire hash stack alongside the 0.10 that `octocrab` uses. Six
+crates were duplicated. Pinning the `0.x` requirements a level deeper removed five of them;
+the remaining duplicate is `syn`, which no manifest here controls. The identity test's
+expected digest held across the change, which is what a hash defined by its content rather
+than by its implementation should do.
+
+One limitation shipped knowingly: a capture reads the first 100 review threads and truncates
+beyond that without saying so. It is a ledger item rather than a comment, since a silent
+truncation is a defect and not a documented boundary.
+
+The ledger item recording that CI green proved only that the toolchain was wired is deleted
+in this commit. The two audit items this slice said it would not address, the stack-cycle
+re-measurement and stele rule R11, remain open and remain unaddressed.

@@ -1,0 +1,27 @@
+[package]
+name = "contributron-cli"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+contributron-domain = { workspace = true }
+contributron-github = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "contributron"
+path = "src/main.rs"
+
+[lib]
+name = "contributron_cli"
+path = "src/lib.rs"

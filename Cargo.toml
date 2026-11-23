@@ -4,7 +4,7 @@
 # before anything is known about where they belong (ADR-0004 makes the same argument about
 # the rule language).
 [workspace]
-members = ["crates/domain"]
+members = ["crates/cli", "crates/domain", "crates/github"]
 resolver = "3"
 
 [workspace.package]
@@ -15,6 +15,35 @@ rust-version = "1.100"
 license = "MIT"
 repository = "https://github.com/Isonimus/contributron"
 authors = ["Isonimus"]
+
+[workspace.dependencies]
+# The lockfile is what pins an exact version; these state the compatible range and live in
+# one place so three manifests cannot drift. For a 0.x crate the *minor* carries the breaking
+# change, so `sha2 = "0"` would permit 0.10 -> 0.11, which is why those are pinned a level
+# deeper. It is not pedantry: `sha2 = "0"` resolved a second copy of the whole hash stack
+# alongside the 0.10 that octocrab uses, which `cargo deny check bans` reported as six
+# duplicated crates.
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+# Default features compile two crypto backends: ring for TLS and aws-lc (a C library)
+# for the JWT signing a GitHub App needs. No App credential exists yet, so that half is
+# weight without a user; it returns with the credential item in LEDGER.md.
+octocrab = { version = "0.54", default-features = false, features = [
+  "default-client",
+  "follow-redirect",
+  "retry",
+  "rustls",
+  "rustls-ring",
+  "timeout",
+  "tracing",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+contributron-domain = { path = "crates/domain" }
+contributron-github = { path = "crates/github" }
 
 # The quality bar is enforced by the compiler where it can be, rather than by review.
 # docs/quality-bar.md states the rules these implement; CLAUDE.md invariant 3 is the one

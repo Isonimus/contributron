@@ -1,0 +1,12 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "title": "fix(index): escape backslashes before pipes in table cells",
+        "isDraft": false,
+        "author": { "login": "Isonimus" },
+        "reviewThreads": { "nodes": [] }
+      }
+    }
+  }
+}
