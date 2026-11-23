@@ -73,12 +73,13 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
   verifiable by the provider rather than asserted by our own audit record. Cheap, and it
   converts part of invariant 6 from review-only into something a third party can check
   (ADR-0005).
-- [feature] A capture reads the first 100 review threads of a pull request and truncates
-  beyond that silently (`THREAD_PAGE_SIZE` in `crates/github/src/capture.rs`). Slice 0007
-  observes threads and does not claim to paginate them, so the truncation is knowing rather
-  than accidental, but an observation that quietly omits open threads would make a later rule
-  act on a pull request it has misread. Paginate the connection, or refuse a capture whose
-  `pageInfo.hasNextPage` is true rather than record a partial one.
+- [feature] Paginate `reviewThreads`. A capture reads the first 100 threads
+  (`THREAD_PAGE_SIZE` in `crates/github/src/capture.rs`), and a pull request with more cannot
+  be observed at all: the normalizer refuses a payload whose `pageInfo.hasNextPage` is true
+  rather than record an observation that omits the rest. Refusing is correct and it is not
+  sufficient, because such a pull request is now invisible instead of half-visible. The
+  silent-truncation half was found by adversarial review on 2026-11-23 and fixed; this line
+  is the remaining work.
 
 ## Resolved
 

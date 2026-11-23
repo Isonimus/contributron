@@ -67,6 +67,25 @@ impl AuthorLogin {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmptyAuthorLogin;
 
+/// Who opened a pull request.
+///
+/// Not an [`Option<AuthorLogin>`], for the same reason
+/// [`ExecutingAgent`](crate::actor::ExecutingAgent) is not an option: an absent value and a
+/// value nobody recorded are different facts. A provider reports a deleted account as a null
+/// author, which is an ordinary state for an old pull request, so the domain names it rather
+/// than treating the pull request as unobservable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum PullRequestAuthor {
+    /// The account that opened it, which still exists.
+    Account {
+        /// Its login.
+        login: AuthorLogin,
+    },
+    /// The account that opened it has been deleted.
+    DeletedAccount,
+}
+
 /// A review thread's provider-assigned identifier.
 ///
 /// Opaque by design: the system compares and orders these but never parses one, so a
@@ -135,8 +154,8 @@ pub struct ObservedPullRequest {
     pub title: String,
     /// Whether it is a draft.
     pub draft: bool,
-    /// The account that opened it.
-    pub author: AuthorLogin,
+    /// The account that opened it, or a statement that it no longer exists.
+    pub author: PullRequestAuthor,
     /// Its review threads, ordered by identifier.
     threads: Vec<ReviewThread>,
 }
@@ -148,7 +167,7 @@ impl ObservedPullRequest {
         number: PullRequestNumber,
         title: impl Into<String>,
         draft: bool,
-        author: AuthorLogin,
+        author: PullRequestAuthor,
         mut threads: Vec<ReviewThread>,
     ) -> Self {
         threads.sort();

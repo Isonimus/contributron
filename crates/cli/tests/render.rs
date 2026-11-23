@@ -7,7 +7,8 @@ use contributron_cli::render_state;
 use contributron_domain::actor::{Attribution, UserId, WorkerId};
 use contributron_domain::event::PullRequestObservation;
 use contributron_domain::pull_request::{
-    AuthorLogin, ObservedPullRequest, PullRequestNumber, ReviewThread, ThreadId, ThreadResolution,
+    AuthorLogin, ObservedPullRequest, PullRequestAuthor, PullRequestNumber, ReviewThread, ThreadId,
+    ThreadResolution,
 };
 use std::path::PathBuf;
 use std::process::Command;
@@ -32,7 +33,9 @@ fn one_open_pull_request() -> PullRequestObservation {
         PullRequestNumber::new(1).expect("one is a valid pull request number"),
         "fix(index): escape backslashes before pipes in table cells",
         false,
-        AuthorLogin::new("Isonimus").expect("a non-empty login"),
+        PullRequestAuthor::Account {
+            login: AuthorLogin::new("Isonimus").expect("a non-empty login"),
+        },
         vec![
             ReviewThread {
                 id: ThreadId::new("PRRT_kwDOKt3bHM5TqX1a").expect("a non-empty identifier"),
@@ -92,5 +95,61 @@ fn the_binary_renders_a_recorded_capture_exits_zero_and_repeats_byte_for_byte() 
     assert_eq!(
         first.stdout, second.stdout,
         "two runs over one capture differ"
+    );
+}
+
+/// A pull request title cannot forge lines in the operator's view.
+///
+/// Found by adversarial review. Anyone may open a pull request, so a title is
+/// attacker-controlled input, and SECURITY.md states that repository content is untrusted.
+/// The render is line-oriented, so a title holding a newline wrote lines the operator reads
+/// as separate pull requests, and an escape sequence would reach their terminal.
+#[test]
+fn a_title_cannot_forge_a_line_or_reach_the_terminal() {
+    let forged = "x\n#999 forged\n  unresolved threads: 0";
+    let observation = PullRequestObservation::new(
+        Attribution::local_operator(UserId::new("local-operator"), WorkerId::new("cli")),
+        ObservedPullRequest::new(
+            PullRequestNumber::new(1).expect("one is a valid pull request number"),
+            forged,
+            false,
+            PullRequestAuthor::Account {
+                login: AuthorLogin::new("attacker").expect("a non-empty login"),
+            },
+            vec![ReviewThread {
+                id: ThreadId::new("T1").expect("a non-empty identifier"),
+                resolution: ThreadResolution::Unresolved,
+            }],
+        ),
+    );
+
+    let rendered = render_state(&[observation]);
+
+    // Two lines per pull request and no more, whatever the title contains.
+    assert_eq!(rendered.lines().count(), 2, "rendered as: {rendered:?}");
+    assert!(rendered.starts_with("#1 x"));
+    assert!(
+        rendered.ends_with("  unresolved threads: 1\n"),
+        "rendered as: {rendered:?}"
+    );
+
+    let escape_sequence = "\u{1b}[2Jcleared";
+    let observation = PullRequestObservation::new(
+        Attribution::local_operator(UserId::new("local-operator"), WorkerId::new("cli")),
+        ObservedPullRequest::new(
+            PullRequestNumber::new(2).expect("two is a valid pull request number"),
+            escape_sequence,
+            false,
+            PullRequestAuthor::Account {
+                login: AuthorLogin::new("attacker").expect("a non-empty login"),
+            },
+            vec![],
+        ),
+    );
+
+    let rendered = render_state(&[observation]);
+    assert!(
+        !rendered.contains('\u{1b}'),
+        "an escape character reached the operator's terminal: {rendered:?}"
     );
 }

@@ -56,9 +56,20 @@ pub struct AuthorPayload {
 
 /// The `reviewThreads` connection.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ReviewThreadsPayload {
     /// `nodes`.
     pub nodes: Option<Vec<ReviewThreadPayload>>,
+    /// `pageInfo`, which is how the provider says whether this page is the whole set.
+    pub page_info: Option<PageInfoPayload>,
+}
+
+/// A connection's pagination state.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageInfoPayload {
+    /// `hasNextPage`.
+    pub has_next_page: Option<bool>,
 }
 
 /// One review thread.

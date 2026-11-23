@@ -21,10 +21,11 @@ pub struct PullRequestLocator {
 
 /// How many review threads one capture reads.
 ///
-/// This slice observes a pull request's threads; it does not claim to paginate them. A
-/// hundred is GitHub's maximum page size, and a pull request with more is a capture this code
-/// silently truncates, which is why the limitation is a ledger item rather than a comment
-/// nobody reads.
+/// A hundred is GitHub's maximum page size. This slice observes a pull request's threads and
+/// does not claim to paginate them, so a pull request with more threads than this cannot be
+/// captured at all: the query selects `pageInfo`, and `normalize_capture` refuses a payload
+/// that holds only the first page rather than recording an observation that omits the rest.
+/// Pagination itself is a ledger item.
 const THREAD_PAGE_SIZE: u32 = 100;
 
 const QUERY: &str = r"
@@ -36,6 +37,7 @@ query($owner: String!, $name: String!, $number: Int!, $threads: Int!) {
       isDraft
       author { login }
       reviewThreads(first: $threads) {
+        pageInfo { hasNextPage }
         nodes { id isResolved }
       }
     }

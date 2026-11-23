@@ -4,8 +4,15 @@
       "pullRequest": {
         "title": "fix(index): escape backslashes before pipes in table cells",
         "isDraft": false,
-        "author": { "login": "Isonimus" },
-        "reviewThreads": { "nodes": [] }
+        "author": {
+          "login": "Isonimus"
+        },
+        "reviewThreads": {
+          "nodes": [],
+          "pageInfo": {
+            "hasNextPage": false
+          }
+        }
       }
     }
   }

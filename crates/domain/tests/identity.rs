@@ -6,7 +6,8 @@
 use contributron_domain::actor::{AgentId, Attribution, ExecutingAgent, UserId, WorkerId};
 use contributron_domain::event::PullRequestObservation;
 use contributron_domain::pull_request::{
-    AuthorLogin, ObservedPullRequest, PullRequestNumber, ReviewThread, ThreadId, ThreadResolution,
+    AuthorLogin, ObservedPullRequest, PullRequestAuthor, PullRequestNumber, ReviewThread, ThreadId,
+    ThreadResolution,
 };
 
 /// Written down before this test was first run, and derived independently of the
@@ -14,7 +15,8 @@ use contributron_domain::pull_request::{
 /// builds, obtained by piping that JSON through `sha256sum`:
 ///
 /// ```text
-/// {"number":7,"title":"slice 0007","draft":false,"author":"Isonimus",
+/// {"number":7,"title":"slice 0007","draft":false,
+///  "author":{"kind":"account","login":"Isonimus"},
 ///  "threads":[{"id":"T1","resolution":"unresolved"}]}
 /// ```
 ///
@@ -22,7 +24,13 @@ use contributron_domain::pull_request::{
 /// to itself would pass for any value including a per-process random one. This constant is
 /// what makes the cross-process claim testable inside one process: a hasher seeded per
 /// process could not reproduce it.
-const EXPECTED_IDENTITY: &str = "6da34d1a43f5657c98c1de87fc6fc2672a4fb905f2ed03a7b8936f2f6ba5069f";
+const EXPECTED_IDENTITY: &str = "3eeda9dc2f98569dbae4ded59f547f4ca63ef8d4a9dd54a865520bf34487aefa";
+
+fn author() -> PullRequestAuthor {
+    PullRequestAuthor::Account {
+        login: AuthorLogin::new("Isonimus").expect("a non-empty login"),
+    }
+}
 
 fn thread(id: &str, resolution: ThreadResolution) -> ReviewThread {
     ReviewThread {
@@ -36,7 +44,7 @@ fn subject(threads: Vec<ReviewThread>) -> ObservedPullRequest {
         PullRequestNumber::new(7).expect("seven is a valid pull request number"),
         "slice 0007",
         false,
-        AuthorLogin::new("Isonimus").expect("a non-empty login"),
+        author(),
         threads,
     )
 }
@@ -126,7 +134,7 @@ fn a_change_in_any_observed_field_changes_the_identity() {
             PullRequestNumber::new(7).expect("seven is a valid pull request number"),
             "slice 0008",
             false,
-            AuthorLogin::new("Isonimus").expect("a non-empty login"),
+            author(),
             vec![thread("T1", ThreadResolution::Unresolved)],
         ),
         ExecutingAgent::NoAgent,
@@ -138,7 +146,7 @@ fn a_change_in_any_observed_field_changes_the_identity() {
             PullRequestNumber::new(7).expect("seven is a valid pull request number"),
             "slice 0007",
             true,
-            AuthorLogin::new("Isonimus").expect("a non-empty login"),
+            author(),
             vec![thread("T1", ThreadResolution::Unresolved)],
         ),
         ExecutingAgent::NoAgent,

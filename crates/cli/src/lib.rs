@@ -30,7 +30,7 @@ pub fn render_state(observations: &[PullRequestObservation]) -> String {
             out,
             "#{number} {title}\n  unresolved threads: {unresolved}\n",
             number = pull_request.number.get(),
-            title = pull_request.title,
+            title = as_one_inert_line(&pull_request.title),
             unresolved = pull_request.unresolved_thread_count(),
         )
         .is_err()
@@ -39,4 +39,24 @@ pub fn render_state(observations: &[PullRequestObservation]) -> String {
         }
     }
     out
+}
+
+/// Replaces every control character with the Unicode replacement character.
+///
+/// A pull request title is written by whoever opened the pull request, and SECURITY.md states
+/// that repository content is untrusted input. This view is line-oriented, so a title holding
+/// a newline would write what the operator reads as a second pull request, and an escape
+/// sequence would reach their terminal. Neutralized at the render rather than at
+/// normalization, because the title *is* what the provider reported: it is this presentation
+/// that cannot carry it verbatim.
+fn as_one_inert_line(text: &str) -> String {
+    text.chars()
+        .map(|character| {
+            if character.is_control() {
+                '\u{fffd}'
+            } else {
+                character
+            }
+        })
+        .collect()
 }

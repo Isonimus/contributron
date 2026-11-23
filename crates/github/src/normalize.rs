@@ -4,7 +4,8 @@
 //! but the live capture be asserted offline against recorded fixtures.
 
 use contributron_domain::pull_request::{
-    AuthorLogin, ObservedPullRequest, PullRequestNumber, ReviewThread, ThreadId, ThreadResolution,
+    AuthorLogin, ObservedPullRequest, PullRequestAuthor, PullRequestNumber, ReviewThread, ThreadId,
+    ThreadResolution,
 };
 
 use crate::payload::{CaptureEnvelope, PullRequestPayload};
@@ -20,6 +21,20 @@ pub enum NormalizeError {
     #[error("the payload is missing a required field: {field}")]
     MissingField {
         /// The path of the absent field within the payload.
+        field: String,
+    },
+
+    /// The payload held only part of a collection, so it describes less than it appears to.
+    ///
+    /// Separate from the other variants because the payload is well formed and every field is
+    /// readable: what is wrong is that the observation would be incomplete, and an incomplete
+    /// observation of review threads is indistinguishable from a complete one once normalized.
+    #[error(
+        "the payload field {field} holds only the first page of a collection, so it would \
+         normalize into an observation that silently omits the rest"
+    )]
+    Truncated {
+        /// The path of the incomplete collection within the payload.
         field: String,
     },
 
@@ -83,12 +98,7 @@ pub fn normalize_pull_request(
     let draft_field = format!("{PULL_REQUEST}.isDraft");
     let draft = required(&draft_field, payload.is_draft)?;
 
-    let author_field = format!("{PULL_REQUEST}.author.login");
-    let author_payload = required(&format!("{PULL_REQUEST}.author"), payload.author.as_ref())?;
-    let raw_login = required(&author_field, author_payload.login.clone())?;
-    let Ok(author) = AuthorLogin::new(raw_login) else {
-        return out_of_domain(&author_field, "an author login cannot be empty");
-    };
+    let author = normalize_author(payload)?;
 
     let threads = normalize_threads(payload)?;
 
@@ -97,11 +107,41 @@ pub fn normalize_pull_request(
     ))
 }
 
+/// A null author is a deleted account, which GitHub's schema permits and which is an ordinary
+/// state for an old pull request. A *present* author with no login is still a failure: that is
+/// a payload this adapter cannot read, not an account that is gone.
+fn normalize_author(payload: &PullRequestPayload) -> Result<PullRequestAuthor, NormalizeError> {
+    let Some(author_payload) = payload.author.as_ref() else {
+        return Ok(PullRequestAuthor::DeletedAccount);
+    };
+
+    let author_field = format!("{PULL_REQUEST}.author.login");
+    let raw_login = required(&author_field, author_payload.login.clone())?;
+    let Ok(login) = AuthorLogin::new(raw_login) else {
+        return out_of_domain(&author_field, "an author login cannot be empty");
+    };
+    Ok(PullRequestAuthor::Account { login })
+}
+
 fn normalize_threads(payload: &PullRequestPayload) -> Result<Vec<ReviewThread>, NormalizeError> {
     let connection = required(
         &format!("{PULL_REQUEST}.reviewThreads"),
         payload.review_threads.as_ref(),
     )?;
+    let connection_field = format!("{PULL_REQUEST}.reviewThreads");
+    let page_info = required(
+        &format!("{connection_field}.pageInfo"),
+        connection.page_info.as_ref(),
+    )?;
+    if required(
+        &format!("{connection_field}.pageInfo.hasNextPage"),
+        page_info.has_next_page,
+    )? {
+        return Err(NormalizeError::Truncated {
+            field: connection_field,
+        });
+    }
+
     let nodes = required(
         &format!("{PULL_REQUEST}.reviewThreads.nodes"),
         connection.nodes.as_ref(),

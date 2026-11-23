@@ -7,7 +7,7 @@
 // `expect` here and nowhere else.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use contributron_domain::pull_request::ThreadResolution;
+use contributron_domain::pull_request::{AuthorLogin, PullRequestAuthor, ThreadResolution};
 use contributron_github::{NormalizeError, normalize_capture};
 
 fn fixture(name: &str) -> String {
@@ -31,7 +31,12 @@ fn a_pull_request_with_two_threads_normalizes_with_one_unresolved() {
         "fix(index): escape backslashes before pipes in table cells"
     );
     assert!(!observed.draft);
-    assert_eq!(observed.author.as_str(), "Isonimus");
+    assert_eq!(
+        observed.author,
+        PullRequestAuthor::Account {
+            login: AuthorLogin::new("Isonimus").expect("a non-empty login")
+        }
+    );
 
     assert_eq!(observed.threads().len(), 2);
     assert_eq!(observed.unresolved_thread_count(), 1);
@@ -145,4 +150,52 @@ fn the_unresolved_count_counts_only_the_unresolved_threads() {
 
     assert_eq!(observed.threads().len(), 3);
     assert_eq!(observed.unresolved_thread_count(), 2);
+}
+
+/// A capture that read only the first page of review threads is not an observation.
+///
+/// Found by adversarial review. The query asks for the first 100 threads and said nothing
+/// about the rest, so a pull request with 150 threads normalized into one holding 100 and
+/// rendered without complaint. An observation that omits open threads is worse than no
+/// observation, because a later rule would act on a pull request it has misread. The ledger
+/// still carries the pagination work; this only stops the silence.
+#[test]
+fn a_truncated_capture_is_refused_rather_than_observed() {
+    let mut capture: serde_json::Value =
+        serde_json::from_str(&fixture("pull_request_with_threads.json"))
+            .expect("the recorded fixture is JSON");
+    capture["data"]["repository"]["pullRequest"]["reviewThreads"]["pageInfo"]["hasNextPage"] =
+        serde_json::Value::Bool(true);
+
+    let error = normalize_capture(&capture.to_string())
+        .expect_err("a capture holding only the first page of threads is incomplete");
+
+    match error {
+        NormalizeError::Truncated { field } => {
+            assert_eq!(field, "data.repository.pullRequest.reviewThreads");
+        }
+        other => panic!("expected a truncation error, got {other:?}"),
+    }
+}
+
+/// A pull request whose author account was deleted is still a pull request.
+///
+/// Found by adversarial review. GitHub's schema declares `author` nullable and reports null
+/// for a deleted account, which is an ordinary state for an old pull request, not a payload
+/// this adapter failed to understand. Rejecting it made such a pull request unobservable, and
+/// on the live path reported it as the fixtures no longer describing GitHub, which pointed
+/// the reader at the wrong problem entirely.
+#[test]
+fn a_deleted_author_is_observed_as_absent_rather_than_rejected() {
+    let mut capture: serde_json::Value =
+        serde_json::from_str(&fixture("pull_request_with_threads.json"))
+            .expect("the recorded fixture is JSON");
+    capture["data"]["repository"]["pullRequest"]["author"] = serde_json::Value::Null;
+
+    let observed = normalize_capture(&capture.to_string())
+        .expect("a pull request with no surviving author is still observable");
+
+    assert_eq!(observed.author, PullRequestAuthor::DeletedAccount);
+    assert_eq!(observed.number.get(), 1);
+    assert_eq!(observed.unresolved_thread_count(), 1);
 }
