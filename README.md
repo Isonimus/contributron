@@ -34,13 +34,29 @@ decisions.
 
 ## Status
 
-**Nothing is built yet.** This repository currently contains its own governance: the
-decisions the work will obey, the sequenced plan, and the executable checks that enforce
-both. Milestone M0.
+**It can see, and nothing else.** One slice of milestone M1 has landed: a recorded GitHub
+payload becomes a normalized observation of a pull request and its review threads, and the
+CLI renders it. Read-only. Nothing is stored, nothing is polled, no rule fires, and no agent
+exists yet.
 
-That ordering is deliberate. The design this project starts from is a multi-year platform,
-and the decisions that narrow it to something reachable are more valuable written down and
-arguable than implicit in code nobody can question later.
+Governance came first, and that ordering was deliberate. The design this project starts from
+is a multi-year platform, and the decisions that narrow it to something reachable are more
+valuable written down and arguable than implicit in code nobody can question later.
+
+```console
+$ contributron render --capture crates/github/tests/fixtures/pull_request_with_threads.json
+#1 fix(index): escape backslashes before pipes in table cells
+  unresolved threads: 1
+```
+
+Recording a pull request from the live API needs a read token, taken from
+`CONTRIBUTRON_GITHUB_TOKEN` or from `git credential`. Nothing is stored: how credentials are
+really acquired is an open decision, due before anything writes, and it is a line in
+[`LEDGER.md`](LEDGER.md).
+
+```console
+$ contributron capture --repo owner/name --pull-request 1 --out capture.json
+```
 
 | What | Where |
 |---|---|

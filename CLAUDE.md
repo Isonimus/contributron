@@ -133,7 +133,7 @@ actually wired (R11), so a row cannot claim a check that runs nowhere.
 
 | # | Invariant | Source | Enforced by |
 |---|---|---|---|
-| 1 | No domain type names a provider concept. Provider payloads are normalized inside the adapter module and GitHub field names never cross that boundary. | ADR-0001 | review-only |
+| 1 | No domain type names a provider concept. Provider payloads are normalized inside the adapter crate and GitHub field names never cross that boundary. | ADR-0001 | `verified_by:` `crates/domain/tests/boundary.rs`, which asserts over the resolved dependency graph |
 | 2 | `package.json` carries no application dependency and no build step for `src`. It exists for the stele document toolchain alone. | ADR-0002 | review-only |
 | 3 | No `unwrap` or `expect` outside tests and process startup, and no discarded `Result`. Errors propagate or stop the operation; none is swallowed. | ADR-0002 | `verified_by:` workspace `[lints.clippy]` plus CI's `-D warnings` |
 | 4 | Provider state is re-fetched from the provider immediately before any sensitive operation. An event payload is never the authority for mergeability, approval or branch protection. | ADR-0003 | review-only |
@@ -141,6 +141,7 @@ actually wired (R11), so a row cannot claim a check that runs nowhere.
 | 6 | Every recorded operation names all three identities: the user who owns or approved it, the worker that ran it, the agent that executed it. | ADR-0005 | review-only |
 | 7 | Persisted rows are owner-scoped even while exactly one owner exists. | ADR-0005 | review-only |
 | 8 | `docs/roadmap.md` carries no open item, status column or checkbox. Open work is a ledger line. | ADR-0006 | review-only |
+| 9 | An event's identity is a digest of observed content only. Attribution is never part of it, and any further provider adapter produces the same identity for the same observed state. | ADR-0008 | `verified_by:` `crates/domain/tests/identity.rs` for the first two clauses; the cross-adapter clause is review-only until a second adapter exists |
 
 When an ADR's consequences create a rule that all *future* work must follow, add the row
 in the same commit as the ADR.
