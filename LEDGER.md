@@ -43,6 +43,13 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
   1.86 rather than compiling. The toolchain half is resolved (now rustc 1.100.0); the
   contention half is not. No decision may cite compile-time numbers until this is redone
   (ADR-0002).
+- [bug] `scripts/build-index.mjs` escapes `|` but not `\` when rendering an ADR title into
+  the `INDEX.md` table, so a title holding a backslash immediately before a pipe emits a
+  live cell separator and breaks the table. Reproduced 2026-11-23: `cell('a\|b')` returns
+  `a\\|b`, where the pair renders as one literal backslash and the pipe goes unescaped;
+  1 of 5 test cases. Escaping backslashes before pipes fixes it. Upstream in
+  `@isonimus/stele`, surfaced here by CodeQL `js/incomplete-sanitization` on the first run.
+  Patching the vendored copy would diverge from the toolkit, so the fix belongs upstream.
 - [audit] CI green currently proves the toolchain is wired and nothing more:
   `crates/domain` holds no types and `cargo test` runs zero tests. The badges must not be
   read as evidence of working behaviour until the first slice lands tests behind them.
