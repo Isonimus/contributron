@@ -57,6 +57,26 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
 - [audit] Confirm stele rule R11 (every scripts/*-verify.mjs wired into package.json)
   behaves correctly once package.json exists; the install predates it.
 
+- [feature] Decide how provider credentials are acquired and held, before M2 performs its
+  first write. Three planes need separate answers and only one of them is a "login": the
+  REST/GraphQL plane needs a token (SSH keys do not authenticate the GitHub or GitLab API
+  at all); the git transport plane inside a worktree can use either a token over HTTPS or
+  an SSH key; commit identity is a third plane again. The candidate shape is an OAuth
+  device flow for the operator's own identity (a CLI has no browser callback to listen on)
+  plus a GitHub App installation token for execution, because an installation token is
+  short-lived and repo-scoped and makes an agent's action attributable to the app rather
+  than to the operator's account, which is what gives invariant 6 a visible counterpart in
+  the provider's own UI instead of a self-reported audit field. The cost is app
+  registration, a private key to hold, and JWT signing. Not decided yet because GitLab has
+  no installation concept to match an App, so the credential abstraction is subject to the
+  same rule as the provider abstraction: extracted on the second adapter, not guessed on
+  the first (ADR-0001, ADR-0005).
+- [feature] Sign agent-authored commits with an SSH signing key distinct from the
+  operator's (`gpg.format = ssh`), so that "which identity produced this commit" is
+  verifiable by the provider rather than asserted by our own audit record. Cheap, and it
+  converts part of invariant 6 from review-only into something a third party can check
+  (ADR-0005).
+
 ## Resolved
 
 Entries move out of "Open" by deletion. A narrative of what merely *happened* belongs in
