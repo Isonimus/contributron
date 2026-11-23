@@ -1,0 +1,13 @@
+{
+  "name": "contributron-docs",
+  "private": true,
+  "type": "module",
+  "description": "Document toolchain only. Application code is Rust; see ADR-0002.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "lint": "node scripts/lint-docs.mjs .",
+    "index": "node scripts/build-index.mjs .",
+    "immutable": "node scripts/check-immutable.mjs .",
+    "probe:stack-cycle": "node scripts/stack-cycle-probe.mjs"
+  }
+}

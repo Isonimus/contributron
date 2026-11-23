@@ -1,0 +1,11 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Node (document toolchain only, see ADR-0002)
+node_modules/
+
+# Local operator configuration and credentials
+/.contributron/
+*.local.toml
+.env
