@@ -12,6 +12,11 @@ on:
   schedule:
     - cron: '41 6 * * 2'
 
+# NOTE: these jobs are path-filtered, so they do not run on a pull request that leaves the
+# dependency tree alone. Do not add `cargo audit` or `cargo deny` to the required status
+# checks on main: a required check that never starts leaves the pull request blocked forever
+# rather than failing. If they need to be required, drop the paths filter first.
+
 permissions:
   contents: read
 
