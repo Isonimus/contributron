@@ -29,7 +29,7 @@ Every document is exactly one of four things.
 | **Immutable** | `adr/*.md`, `slices/*.md` | Written once. Body prose is never edited. Only status/supersession fields may change. |
 | **Generated** | `adr/INDEX.md` | Built by script from frontmatter. Never hand-edited. |
 | **Ledger** | `LEDGER.md` | Exactly one per repo. The only hand-maintained tracker. |
-| **Live doc** | `README.md`, `docs/*.md` | Describes how something behaves *now*. Updated **in the same change** as the thing it describes, and cited from this file so it is never orphaned (stele:ADR-0010). |
+| **Live doc** | `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, `docs/*.md` | Describes how something behaves *now*. Updated **in the same change** as the thing it describes, and cited from this file so it is never orphaned (stele:ADR-0010). |
 
 - **ADR** — a decision later work must obey (a mechanism, data format, or boundary).
   Asserts *"on date X we chose Y because Z"*: a historical claim, true forever.
@@ -135,7 +135,7 @@ actually wired (R11), so a row cannot claim a check that runs nowhere.
 |---|---|---|---|
 | 1 | No domain type names a provider concept. Provider payloads are normalized inside the adapter module and GitHub field names never cross that boundary. | ADR-0001 | review-only |
 | 2 | `package.json` carries no application dependency and no build step for `src`. It exists for the stele document toolchain alone. | ADR-0002 | review-only |
-| 3 | No `unwrap` or `expect` outside tests and process startup. Errors propagate or stop the operation; none is swallowed. | ADR-0002 | pending (LEDGER) |
+| 3 | No `unwrap` or `expect` outside tests and process startup, and no discarded `Result`. Errors propagate or stop the operation; none is swallowed. | ADR-0002 | `verified_by:` workspace `[lints.clippy]` plus CI's `-D warnings` |
 | 4 | Provider state is re-fetched from the provider immediately before any sensitive operation. An event payload is never the authority for mergeability, approval or branch protection. | ADR-0003 | review-only |
 | 5 | No DSL, parser, intermediate representation or visual editor until three workflows exist as ordinary Rust. | ADR-0004 | review-only |
 | 6 | Every recorded operation names all three identities: the user who owns or approved it, the worker that ran it, the agent that executed it. | ADR-0005 | review-only |

@@ -1,5 +1,29 @@
 # Contributron
 
+<p align="center">
+  <strong>Rules that watch your repositories and dispatch AI agents on event, without taking your authority away</strong>
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://github.com/Isonimus/contributron/actions/workflows/ci.yml"><img src="https://github.com/Isonimus/contributron/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/Isonimus/contributron/actions/workflows/docs.yml"><img src="https://github.com/Isonimus/contributron/actions/workflows/docs.yml/badge.svg" alt="Doc invariants"></a>
+  <a href="https://github.com/Isonimus/contributron/actions/workflows/codeql.yml"><img src="https://github.com/Isonimus/contributron/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
+  <a href="https://github.com/Isonimus/contributron/actions/workflows/supply-chain.yml"><img src="https://github.com/Isonimus/contributron/actions/workflows/supply-chain.yml/badge.svg" alt="Supply chain"></a>
+  <img src="https://img.shields.io/badge/rust-1.100-333?logo=rust" alt="Rust 1.100">
+  <a href="https://www.npmjs.com/package/@isonimus/stele"><img src="https://img.shields.io/badge/method-Stele-6E44FF" alt="Built with Stele"></a>
+  <img src="https://img.shields.io/badge/status-pre--alpha-red" alt="Status: pre-alpha, nothing built yet">
+</p>
+
+<p align="center">
+  <a href="#status">Status</a> &bull;
+  <a href="#the-shape-of-the-plan">The plan</a> &bull;
+  <a href="#decisions-worth-knowing-before-reading-the-code">Decisions</a> &bull;
+  <a href="#this-repository-governs-itself">Checks</a> &bull;
+  <a href="#contributing">Contributing</a> &bull;
+  <a href="#built-with-stele">Method</a>
+</p>
+
 Event-driven automation for Git repositories. An operator declares rules that observe
 repository activity (pull requests, review threads, pipelines, issues) and dispatch work on
 event: a deterministic action, or an AI agent given a bounded task and an explicit set of
@@ -71,6 +95,35 @@ npm run immutable  # immutable bodies have only gained lines
 
 That machinery is [`@isonimus/stele`](https://github.com/Isonimus/stele), vendored rather
 than depended on.
+
+## Contributing
+
+[`CONTRIBUTING.md`](CONTRIBUTING.md) has the detail. At this stage the most useful
+contribution is an argument against a recorded decision rather than code: the ADRs narrow a
+much larger design, and a narrowing that is wrong is cheapest to fix now.
+
+A change that affects what an agent is permitted to do, which credentials reach which
+process, or what an operator is asked to approve gets a slower review and should say so in
+the pull request. [`SECURITY.md`](SECURITY.md) states what counts as a security issue and why
+an agent is never treated as a security boundary.
+
+By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Built with Stele
+
+This repo is developed with **[Stele](https://www.npmjs.com/package/@isonimus/stele)**, a
+documentation-as-decisions method. Every durable decision is written as an immutable **ADR**
+([`adr/`](adr/)) and every feature as a **slice** before the code, shipped in the same commit
+and frozen once merged, so the record of why is never rewritten, only superseded. Open work
+lives in a single [`LEDGER.md`](LEDGER.md); [`adr/INDEX.md`](adr/INDEX.md) is generated; and a
+pre-commit hook, with CI as its backstop, runs the linter on every commit. The conventions
+live in [`CLAUDE.md`](CLAUDE.md). If the layout looks unusual, that is why: the commit history
+is meant to read as a trail of decisions.
+
+Stele also supplies the one thing a goal needs before an agent can be set loose on it. A
+slice's `## Definition of Done` is written as Given/When/Then before any code, and rule R11
+fails the commit if the verification it names is not wired up. That is what stops "done" from
+being a judgement the author gets to make about their own work.
 
 ## License
 

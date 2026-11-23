@@ -1,0 +1,71 @@
+name: CI
+
+# Every push to main and every pull request: formatting, clippy as a gate rather than a
+# suggestion, the test suite, and a build against the committed lock file.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Only the newest push to a ref is worth checking.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # A build that reaches the network mid-compile fails slowly and confusingly. Fetching is a
+  # separate step, so everything after it is offline by then.
+  CARGO_NET_RETRY: 3
+  RUSTFLAGS: -D warnings
+
+jobs:
+  format:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # rust-toolchain.toml pins the channel and components, so no toolchain action is
+      # needed: the first cargo invocation installs exactly what the file names.
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-clippy-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+      - run: cargo fetch --locked
+      # --all-targets so tests, benches and examples are linted too: a lint rule that does
+      # not apply to test code is a rule with a hole in it, and the tests are codebase.
+      - run: cargo clippy --all-targets --all-features --offline -- -D warnings
+
+  test:
+    name: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-test-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+      - run: cargo fetch --locked
+      - run: cargo test --workspace --all-features --offline
+      # --locked fails if building would change Cargo.lock, which catches a dependency added
+      # without committing the lock file. The lock is committed because this ships binaries,
+      # not a library consumed by others.
+      - run: cargo build --workspace --locked --offline

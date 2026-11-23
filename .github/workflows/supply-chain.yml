@@ -1,0 +1,46 @@
+name: supply chain
+
+# What CodeQL does not cover: the dependency tree. An advisory published against a crate we
+# already use makes code that has not changed vulnerable, so this runs weekly as well as on
+# every change to the tree.
+on:
+  push:
+    branches: [main]
+    paths: ['**/Cargo.toml', 'Cargo.lock', 'deny.toml', '.github/workflows/supply-chain.yml']
+  pull_request:
+    paths: ['**/Cargo.toml', 'Cargo.lock', 'deny.toml', '.github/workflows/supply-chain.yml']
+  schedule:
+    - cron: '41 6 * * 2'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The advisory results are uploaded as code scanning alerts, so an advisory appears in
+      # the same place as a CodeQL finding rather than only in a log nobody reads.
+      issues: write
+      checks: write
+    steps:
+      - uses: actions/checkout@v7
+      # RustSec's own action, rather than a third-party wrapper or a `cargo install` that
+      # compiles the auditor on every run. A security check should not widen the supply
+      # chain it exists to inspect.
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Maintained by cargo-deny's own authors. Checks four things deny.toml configures:
+      # advisories, licences, banned and duplicated crates, and dependency sources.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check all

@@ -1,0 +1,7 @@
+# Pinned, not floating. A new stable release can introduce a clippy lint or tighten an
+# existing one, which would fail code that has not changed and block an unrelated pull
+# request. Upgrading is a deliberate change with its own commit, the same reasoning that
+# pins the cppcheck image in the rattlebox repo.
+[toolchain]
+channel = "1.100.0"
+components = ["rustfmt", "clippy"]

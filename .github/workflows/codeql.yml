@@ -1,0 +1,48 @@
+name: CodeQL
+
+# Semantic security analysis. Three languages, for three distinct attack surfaces:
+#   rust                   the daemon itself
+#   javascript-typescript  the vendored stele toolchain, which runs in a pre-commit hook
+#   actions                these workflows, which hold the repository's write permissions
+#
+# Rust support in CodeQL reached general availability in October 2025 and needs no build,
+# so there is no compilation to trace and no results to filter back out afterwards.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so new queries reach code that has not changed. Offset off the hour because
+    # a scheduled run at :00 queues behind everybody else's.
+    - cron: '41 5 * * 2'
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze ${{ matrix.language }}
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: rust
+          - language: javascript-typescript
+          - language: actions
+    steps:
+      - uses: actions/checkout@v7
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          # No language here needs a traced build. Stating it explicitly rather than
+          # relying on the default means a future language that does need one fails
+          # loudly instead of being silently under-analyzed.
+          build-mode: none
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ matrix.language }}

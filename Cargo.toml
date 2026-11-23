@@ -1,0 +1,51 @@
+# One workspace, so every crate shares a lint configuration, a dependency resolution and a
+# single Cargo.lock. The crate layout stays flat until a boundary earns a crate of its own:
+# the original design proposed eleven crates up front, which would fix module boundaries
+# before anything is known about where they belong (ADR-0004 makes the same argument about
+# the rule language).
+[workspace]
+members = ["crates/domain"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+# Matched to rust-toolchain.toml. octocrab and its transitive dependencies already required
+# 1.88 when this was written, so a conservative floor buys nothing.
+rust-version = "1.100"
+license = "MIT"
+repository = "https://github.com/Isonimus/contributron"
+authors = ["Isonimus"]
+
+# The quality bar is enforced by the compiler where it can be, rather than by review.
+# docs/quality-bar.md states the rules these implement; CLAUDE.md invariant 3 is the one
+# this table exists to make non-optional.
+[workspace.lints.rust]
+# This process supervises child processes and talks to a network. There is no case for
+# hand-written unsafe in it, so the escape hatch is closed rather than discouraged.
+unsafe_code = "forbid"
+missing_docs = "warn"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+# A dependency that stops being used is removed, not left in Cargo.toml to be audited forever.
+unused_crate_dependencies = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+# Warn rather than deny, because CI runs clippy with `-D warnings` anyway: the split keeps a
+# local `cargo clippy` readable while leaving the gate exactly as strict.
+pedantic = { level = "warn", priority = -1 }
+# Invariant 3: no unwrap or expect outside tests and process startup. A test module opts out
+# explicitly with #[allow(clippy::unwrap_used)], which makes each exemption visible in review
+# rather than global.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+# "Fail loud" cuts both ways: a discarded Result is a silenced error.
+let_underscore_must_use = "deny"
+# Unfinished code does not reach main. A stub that compiles is a lie the compiler helped tell.
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+# Arithmetic that wraps silently on a poll counter or a retry budget is a defect, not a
+# performance choice.
+arithmetic_side_effects = "deny"

@@ -43,9 +43,9 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
   1.86 rather than compiling. The toolchain half is resolved (now rustc 1.100.0); the
   contention half is not. No decision may cite compile-time numbers until this is redone
   (ADR-0002).
-- [feature] Enforce standing invariant 3 (no `unwrap`/`expect` outside tests and startup)
-  with a deny-level clippy configuration, so it stops being review-only. Blocked until the
-  Cargo workspace exists (ADR-0002).
+- [audit] CI green currently proves the toolchain is wired and nothing more:
+  `crates/domain` holds no types and `cargo test` runs zero tests. The badges must not be
+  read as evidence of working behaviour until the first slice lands tests behind them.
 - [audit] Confirm stele rule R11 (every scripts/*-verify.mjs wired into package.json)
   behaves correctly once package.json exists; the install predates it.
 

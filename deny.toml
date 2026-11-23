@@ -1,0 +1,44 @@
+# cargo-deny configuration. Four questions, each with a stated answer, so that a failure is
+# a decision being enforced rather than a default nobody chose.
+
+[graph]
+# Only what we actually ship. Auditing a Windows-only transitive dependency of a Linux
+# daemon produces findings nobody can act on.
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+
+[advisories]
+version = 2
+# An advisory against a crate in the tree fails the build. There is no severity threshold:
+# triage is a human decision recorded as a ledger line or an ignore with a reason, not a
+# number compared at build time.
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# Permissive licences only. This is MIT-licensed and distributed as a binary; a copyleft
+# dependency would impose obligations on everyone who ships it, which is a decision for an
+# ADR rather than something to discover in a release.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# A wildcard or git dependency makes a build unreproducible, so both are refused here rather
+# than noticed later when two machines disagree about what was built.
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

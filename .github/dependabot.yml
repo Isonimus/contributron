@@ -1,0 +1,25 @@
+version: 2
+updates:
+  # The actions the workflows use. Pinned to major tags, so this is what keeps them current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  # The Rust dependency tree. Grouped, because a tree this size otherwise produces a pull
+  # request per crate per week and the review becomes a rubber stamp, which is worse than
+  # updating less often.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      rust-patch:
+        update-types: [patch]
+      rust-minor:
+        update-types: [minor]
+
+  # npm is deliberately absent. package.json carries no dependency: it exists to run the
+  # vendored stele toolchain and nothing else (ADR-0002), so there is nothing here to update.
+  # rust-toolchain.toml is also absent, because Dependabot does not read it; the toolchain is
+  # pinned on purpose and upgrading it is a decision with its own commit.

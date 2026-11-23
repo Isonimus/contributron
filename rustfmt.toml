@@ -1,0 +1,4 @@
+# Only stable options. A nightly-only setting here would format differently depending on who
+# ran it, which is worse than not configuring it at all.
+edition = "2024"
+max_width = 100
