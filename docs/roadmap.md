@@ -1,4 +1,4 @@
-# Contributron — Roadmap
+# Contributron: Roadmap
 
 **Live doc.** It states what the plan *is* right now. It is updated in the same change that
 alters the plan: completing a slice, accepting an ADR that re-sequences work, or cutting a
@@ -85,7 +85,7 @@ Each milestone is a set of slices. Each slice is written before its code, carrie
 Definition of Done as Given/When/Then, and names its proof in `## Verification`
 (stele:ADR-0011). A slice is the unit of review.
 
-### M0 — Foundation
+### M0: Foundation
 
 The repo governs itself before it governs anything else.
 
@@ -98,7 +98,7 @@ The repo governs itself before it governs anything else.
 **Done when:** a commit that violates a recorded convention is refused by the hook, and the
 full check suite runs from one command.
 
-### M1 — Observation
+### M1: Observation
 
 Read-only. No mutation of any remote, by anything.
 
@@ -112,7 +112,7 @@ Read-only. No mutation of any remote, by anything.
 **Done when:** against recorded API fixtures, normalization is exact, redelivery is a no-op,
 and the rendered state matches the expected output. Fully offline and deterministic.
 
-### M2 — Deterministic reaction
+### M2: Deterministic reaction
 
 Rules, without AI. The engine proves itself on actions whose correctness is checkable.
 
@@ -125,7 +125,7 @@ Rules, without AI. The engine proves itself on actions whose correctness is chec
 **Done when:** a rule fires on a real event against this repo, the action is recorded with
 full attribution, and a workflow instance survives a process kill mid-execution.
 
-### M3 — Agent execution
+### M3: Agent execution
 
 The architectural assumption under test: bounded, isolated, locally executed AI work.
 
@@ -138,7 +138,7 @@ The architectural assumption under test: bounded, isolated, locally executed AI 
 **Done when:** a review thread opens on a real pull request, an agent investigates it in an
 isolated worktree, and the report reaches the operator with no mutation of the remote.
 
-### M4 — Supervised mutation
+### M4: Supervised mutation
 
 The first slice where an agent changes something, and the first where approval exists.
 
@@ -152,7 +152,7 @@ The first slice where an agent changes something, and the first where approval e
 proposes a fix, the operator approves, the fix is pushed, and the merge happens only once
 every configured condition is re-verified against the provider.
 
-### M5 — Extraction
+### M5: Extraction
 
 Only now does the language get designed, from three workflows that exist.
 
