@@ -142,6 +142,7 @@ actually wired (R11), so a row cannot claim a check that runs nowhere.
 | 7 | Persisted rows are owner-scoped even while exactly one owner exists. | ADR-0005, ADR-0010 | `verified_by:` `crates/store/tests/owner_scope.rs` |
 | 8 | `docs/roadmap.md` carries no open item, status column or checkbox. Open work is a ledger line. | ADR-0006 | review-only |
 | 9 | An event's identity is a digest of observed content only. Attribution is never part of it, and any further provider adapter produces the same identity for the same observed state. | ADR-0008 | `verified_by:` `crates/domain/tests/identity.rs` for the first two clauses; the cross-adapter clause is review-only until a second adapter exists |
+| 10 | No secret (token, private key, signing key) is committed to the repository or written to any file inside the working tree. Secrets are supplied by env var or by a path outside the working tree. | ADR-0013 | `pending (LEDGER)` — promoted to `verified_by:` by the first M2 slice that reads a token |
 
 When an ADR's consequences create a rule that all *future* work must follow, add the row
 in the same commit as the ADR.
