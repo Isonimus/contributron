@@ -345,6 +345,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "contributron-react"
+version = "0.0.0"
+dependencies = [
+ "contributron-domain",
+ "contributron-poll",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "contributron-store"
 version = "0.0.0"
 dependencies = [

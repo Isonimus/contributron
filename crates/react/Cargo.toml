@@ -1,0 +1,20 @@
+[package]
+name = "contributron-react"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+contributron-domain = { workspace = true }
+contributron-poll = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+
+[lints]
+workspace = true
