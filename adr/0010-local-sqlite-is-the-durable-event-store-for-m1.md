@@ -149,3 +149,29 @@ that decision rather than re-litigating it.
   domain type.
 
 [obs]: ../crates/domain/src/event.rs
+
+## Amendment — 2026-11-24: per-owner deduplication and schema versioning
+
+Adversarial review of the initial implementation found that making `event_id` the sole
+primary key collapses the per-owner scoping on the write path. Two owners sharing a store
+file would, on the same observed content, compute the same `event_id` (ADR-0008 excludes
+attribution from the identity); the second write would hit the primary-key conflict and be
+reported as `Duplicate`, and every read path being scoped by `owner_user` would then leave
+the second owner with no row at all. Silent data loss across the owner boundary.
+
+Two changes correct that and one guards against a future class of the same mistake:
+
+- The schema's primary key is `(owner_user, event_id)`, not `event_id` alone. Dedup is
+  per-owner, which is what invariant 7 means in practice.
+- The write path's "this is a duplicate" match arm catches only
+  `SQLITE_CONSTRAINT_PRIMARYKEY` (extended code 1555). The bare `SQLITE_CONSTRAINT` (19)
+  arm the first version carried is removed: a future NOT NULL, CHECK or UNIQUE violation
+  must fail loud rather than be silently reclassified as "already recorded".
+- `PRAGMA user_version` is written on first create and checked on every open. A file whose
+  version does not match is refused with `StoreError::SchemaVersionMismatch`, because the
+  encoding assumptions of this ADR do not apply to a file written under a different one.
+
+The Decision block's schema diagram and its description of the key still show the
+pre-amendment shape. That is left as it was: this document records what was decided at each
+point, and the correction here is the current state. The code matches this amendment; the
+amendment is what a reader implements against.

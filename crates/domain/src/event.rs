@@ -68,7 +68,12 @@ impl PullRequestObservation {
     ///
     /// The canonical form is JSON over the observed content. JSON escapes its strings, so no
     /// field value can impersonate a field boundary, which is the property a concatenation
-    /// of raw bytes would lack.
+    /// of raw bytes would lack. "Canonical" here is in the sense ADR-0008 defines: a stable
+    /// encoding of the observed content as the types in this crate serialize it, pinned by
+    /// `crates/domain/tests/identity.rs` against an independently computed digest. It is not
+    /// RFC 8785; the types carry no floats or maps, which is what would need JCS, and the
+    /// identity test would catch drift from a serde-json update that produced different
+    /// bytes.
     ///
     /// # Errors
     ///

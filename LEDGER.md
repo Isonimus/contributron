@@ -73,6 +73,14 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
   verifiable by the provider rather than asserted by our own audit record. Cheap, and it
   converts part of invariant 6 from review-only into something a third party can check
   (ADR-0005).
+- [bug] `UserId::new`, `WorkerId::new` and `AgentId::new` accept the empty string. The three
+  newtypes are declared by the `string_id!` macro in `crates/domain/src/actor.rs`, which does
+  no validation, so a persisted row can carry `owner_user=''`, `worker=''` or `agent_id=''`.
+  The store's NOT NULL columns accept `''`, and the write path's owner check compares two
+  possibly-empty strings. Invariant 6 says every operation names all three identities; an
+  empty name is a boundary-validation gap, not a corruption bug. Found by the 2026-11-24
+  adversarial review of slice 0009. Fix: validate at the constructor the way `AuthorLogin`
+  and `ThreadId` already do (ADR-0005).
 - [feature] Paginate `reviewThreads`. A capture reads the first 100 threads
   (`THREAD_PAGE_SIZE` in `crates/github/src/capture.rs`), and a pull request with more cannot
   be observed at all: the normalizer refuses a payload whose `pageInfo.hasNextPage` is true

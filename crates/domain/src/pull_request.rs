@@ -146,6 +146,15 @@ pub struct ReviewThread {
 ///
 /// `threads` is kept sorted by identifier so that two observations of the same state are
 /// equal, and hash equally, regardless of the order the provider happened to list them in.
+///
+/// Sorting happens in [`ObservedPullRequest::new`], not in the derived `Deserialize`, and
+/// that is deliberate. The normalizer and the store both go through `new`: the stored
+/// `payload` is always a serialization of a sorted vector, and a `Deserialize` round-trip
+/// preserves vector order, so a stored row read back has the same bytes it was written
+/// with. A hand-edited payload with unsorted threads would deserialize unsorted, and its
+/// recomputed identity would then differ from what is keyed on in the store. That is a
+/// corrupted row and the store's `Decode` path handles it loud; it is not a case this type
+/// defends against by re-sorting on deserialize.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObservedPullRequest {
     /// The pull request's number in its repository.
