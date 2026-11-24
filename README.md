@@ -38,12 +38,14 @@ decisions.
 
 ## Status
 
-**It can see and remember.** Two slices of milestone M1 have landed: a recorded GitHub
-payload becomes a normalized observation of a pull request and its review threads (slice
-0007), and that observation persists in a local SQLite store keyed by its content identity,
-so re-observing the same state is a no-op the database enforces rather than a check the
-caller remembered to perform (slice 0009, ADR-0010). Read-only. Nothing is polled, no rule
-fires, and no agent exists yet.
+**It can see, remember and watch.** The three slices of milestone M1 have landed: a
+recorded GitHub payload becomes a normalized observation of a pull request and its review
+threads (slice 0007); that observation persists in a local SQLite store keyed by its
+content identity, so re-observing the same state is a no-op the database enforces rather
+than a check the caller remembered to perform (slice 0009, ADR-0010); and a polling loop
+watches a list of pull requests on a per-target cadence with jitter and exponential
+backoff, writing each observation to the same store (slice 0011, ADR-0012). Still
+read-only. No rule fires, and no agent exists yet.
 
 Governance came first, and that ordering was deliberate. The design this project starts from
 is a multi-year platform, and the decisions that narrow it to something reachable are more
@@ -73,6 +75,19 @@ recorded
 $ contributron list --store ./events.sqlite3
 #1 fix(index): escape backslashes before pipes in table cells
   unresolved threads: 1
+```
+
+Watching is the loop: one or more pull requests, polled on a per-target cadence
+(`--interval-secs`, default 60) with deterministic jitter and exponential backoff on
+error. Each tick writes to the store if the content changed, reports `fresh` or
+`unchanged` on stdout, and keeps running until SIGINT (ADR-0012).
+
+```console
+$ contributron watch --target owner/name#1 --target owner/name#42 --store ./events.sqlite3
+fresh owner/name#1
+fresh owner/name#42
+unchanged owner/name#1
+unchanged owner/name#42
 ```
 
 | What | Where |

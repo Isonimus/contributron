@@ -81,6 +81,15 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
   empty name is a boundary-validation gap, not a corruption bug. Found by the 2026-11-24
   adversarial review of slice 0009. Fix: validate at the constructor the way `AuthorLogin`
   and `ThreadId` already do (ADR-0005).
+- [feature] Second SIGINT and in-flight fetch cancellation for `contributron watch`. The
+  shutdown task awaits `tokio::signal::ctrl_c()` once and exits, so a second Ctrl-C is a
+  no-op; and the per-target task does not cancel its in-flight fetch, so a stalled HTTP
+  call (octocrab default timeouts bound this, but the window exists) leaves the process
+  waiting until the fetch times out. Found by the 2026-11-24 adversarial review of slice
+  0011; the slice shipped with the cleaner first-SIGINT-drains contract and routes the
+  second-signal escalation here. Fix: replace the one-shot `ctrl_c` await with a loop
+  (first signal flips cancel; second signal `std::process::exit(130)`) and wire a per-
+  fetch timeout at the `Fetch` boundary (ADR-0012).
 - [feature] Paginate `reviewThreads`. A capture reads the first 100 threads
   (`THREAD_PAGE_SIZE` in `crates/github/src/capture.rs`), and a pull request with more cannot
   be observed at all: the normalizer refuses a payload whose `pageInfo.hasNextPage` is true

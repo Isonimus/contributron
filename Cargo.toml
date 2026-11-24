@@ -4,7 +4,7 @@
 # before anything is known about where they belong (ADR-0004 makes the same argument about
 # the rule language).
 [workspace]
-members = ["crates/cli", "crates/domain", "crates/github", "crates/store"]
+members = ["crates/cli", "crates/domain", "crates/github", "crates/poll", "crates/store"]
 resolver = "3"
 
 [workspace.package]
@@ -51,9 +51,19 @@ rusqlite = { version = "0.41", features = ["bundled"] }
 # the API surface is narrower and the crate has no default global-state dependency.
 time = { version = "0.3", default-features = false, features = ["std", "formatting"] }
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = [
+  "macros",
+  "rt-multi-thread",
+  "signal",
+  "sync",
+  "time",
+] }
+# Decoupled per-target jitter and the fairness test do not need a cryptographic RNG; a
+# process-local hash of the locator produces deterministic offsets without pulling in the
+# `rand` crate's trait tower (ADR-0012, slice 0011).
 contributron-domain = { path = "crates/domain" }
 contributron-github = { path = "crates/github" }
+contributron-poll = { path = "crates/poll" }
 contributron-store = { path = "crates/store" }
 
 # The quality bar is enforced by the compiler where it can be, rather than by review.

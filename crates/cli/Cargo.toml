@@ -13,6 +13,7 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 contributron-domain = { workspace = true }
 contributron-github = { workspace = true }
+contributron-poll = { workspace = true }
 contributron-store = { workspace = true }
 tokio = { workspace = true }
 
