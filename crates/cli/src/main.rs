@@ -3,6 +3,7 @@
 use anyhow::{Context as _, Result, anyhow};
 use clap::{Parser, Subcommand};
 use contributron_cli::{render_state, token};
+use contributron_cli::token::Source as TokenSource;
 use contributron_domain::actor::UserId;
 use contributron_github::{
     PullRequestLocator as GhLocator, capture_pull_request, normalize_capture,
@@ -55,6 +56,10 @@ enum Command {
         /// Where to write the recorded capture.
         #[arg(long)]
         out: PathBuf,
+        /// Path to a file holding a GitHub token (ADR-0013). Takes precedence over
+        /// the `CONTRIBUTRON_TOKEN` env var; `git credential` is the final fallback.
+        #[arg(long = "token-path")]
+        token_path: Option<PathBuf>,
     },
     /// Normalize a recorded capture and persist it in the durable store.
     Record {
@@ -85,6 +90,11 @@ enum Command {
         /// Path to the SQLite store (slice 0009, ADR-0010).
         #[arg(long)]
         store: PathBuf,
+        /// Path to a file holding a GitHub token (ADR-0013). Optional for public
+        /// repositories. Takes precedence over the `CONTRIBUTRON_TOKEN` env var;
+        /// `git credential` is the final fallback.
+        #[arg(long = "token-path")]
+        token_path: Option<PathBuf>,
     },
 }
 
@@ -96,14 +106,16 @@ fn main() -> Result<()> {
             repo,
             pull_request,
             out,
-        } => capture(&repo, pull_request, &out),
+            token_path,
+        } => capture(&repo, pull_request, &out, token_path),
         Command::Record { capture, store } => record_to_store(&capture, &store),
         Command::List { store } => list_from_store(&store),
         Command::Watch {
             targets,
             interval_secs,
             store,
-        } => run_watch(targets, interval_secs, &store),
+            token_path,
+        } => run_watch(targets, interval_secs, &store, token_path),
     }
 }
 
@@ -180,9 +192,10 @@ fn render(capture: &Path) -> Result<()> {
     Ok(())
 }
 
-fn capture(repo: &str, number: u64, out: &Path) -> Result<()> {
+fn capture(repo: &str, number: u64, out: &Path, token_path: Option<PathBuf>) -> Result<()> {
     let locator = parse_repo(repo, number)?;
-    let token = token::resolve()?;
+    let source = TokenSource::from_flag(token_path);
+    let token = token::resolve(&source)?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -190,7 +203,7 @@ fn capture(repo: &str, number: u64, out: &Path) -> Result<()> {
         .context("starting an async runtime for the capture")?;
 
     let fixture = runtime
-        .block_on(capture_pull_request(token, &locator))
+        .block_on(capture_pull_request(token.expose().to_owned(), &locator))
         .with_context(|| format!("capturing {repo}#{number}"))?;
 
     std::fs::write(out, &fixture)
@@ -204,6 +217,7 @@ fn run_watch(
     targets: Vec<PullRequestLocator>,
     interval_secs: u64,
     store_path: &Path,
+    token_path: Option<PathBuf>,
 ) -> Result<()> {
     if targets.is_empty() {
         return Err(anyhow!(
@@ -224,11 +238,18 @@ fn run_watch(
         .build()
         .context("starting an async runtime for the watch")?;
 
-    runtime.block_on(watch_loop(config, store_path))
+    runtime.block_on(watch_loop(config, store_path, token_path))
 }
 
-async fn watch_loop(config: PollConfig, store_path: &Path) -> Result<()> {
-    let token = token::resolve()?;
+async fn watch_loop(
+    config: PollConfig,
+    store_path: &Path,
+    token_path: Option<PathBuf>,
+) -> Result<()> {
+    // ADR-0013 consequence 3: the read path works on public repos without a credential, so
+    // `watch` reads the token optionally and the fetch sends it when present.
+    let source = TokenSource::from_flag(token_path);
+    let token = token::resolve_optional(&source)?;
     let fetch: Fetch = Arc::new(move |locator: PullRequestLocator| {
         let token = token.clone();
         Box::pin(async move {
@@ -237,7 +258,20 @@ async fn watch_loop(config: PollConfig, store_path: &Path) -> Result<()> {
                 repo: locator.repo.clone(),
                 number: locator.number,
             };
-            let raw = capture_pull_request(token, &gh)
+            // `capture_pull_request` requires a token in this slice; anonymous public-repo
+            // access is wired through a separate adapter path in a later slice (the
+            // capture client's `personal_token` is not `Option<String>`). For the read path
+            // today, a missing token is still refused at the fetch — the slice 0014
+            // read-path test documents this as a known gap to close when the anonymous
+            // GraphQL client lands.
+            let token = token.ok_or_else(|| {
+                FetchError(
+                    "no GitHub token available. Pass --token-path, set CONTRIBUTRON_TOKEN, \
+                     or configure git credential for github.com (ADR-0013)."
+                        .to_owned(),
+                )
+            })?;
+            let raw = capture_pull_request(token.expose().to_owned(), &gh)
                 .await
                 .map_err(|e| FetchError(format!("{e}")))?;
             normalize_capture(&raw).map_err(|e| FetchError(format!("{e}")))

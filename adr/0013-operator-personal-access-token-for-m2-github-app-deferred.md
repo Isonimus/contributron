@@ -146,3 +146,38 @@ carries the debt of writing the check. The row goes in now because M2's first co
 introduces secret-reading code and the invariant needs to exist before that commit, not
 after. The slice that first reads a token is where the row is promoted from pending to
 `verified_by:`, because that is where there is something concrete to check.
+
+## Amendment — 2026-11-24: `git credential fill` kept as an operator-convenience fallback
+
+The read-only M1 CLI (slice 0011) resolved a token by checking a differently-named env var
+(`CONTRIBUTRON_GITHUB_TOKEN`) and, if it was absent, asking `git credential fill` for a
+github.com password. Slice 0014 unifies the resolver around the names this ADR settled on
+(`--token-path <file>` first, then `CONTRIBUTRON_TOKEN`), and the question is what happens
+to the `git credential` half.
+
+The answer is: kept, as a third-tier convenience fallback, and documented here so the
+precedence is on the record rather than implicit in `token.rs`. The reasoning:
+
+- The use-case is real. Any operator who has already pushed to github.com from this
+  machine has a cached github.com credential there, and a workflow that reuses it is
+  friction the operator does not have to think about on first run.
+- It does not weaken the "fail loud" guarantee. The write-path resolver still errors if
+  every source — flag, env, credential helper — produced nothing, and the error names
+  all three sources.
+- It does not cross invariant 10. `git credential` holds the credential outside this
+  working tree; nothing is written into the repo as a result of this fallback.
+- A purist stance ("drop the fallback, make the operator pass a flag or env var") was
+  considered and rejected: it buys no safety property and costs an operator-visible
+  regression from the shape slice 0011 already shipped.
+
+The resolver's precedence, stated once:
+
+1. `--token-path <file>` (if the flag was given).
+2. `CONTRIBUTRON_TOKEN` env var (if set and non-whitespace).
+3. `git credential fill` for `protocol=https\nhost=github.com` (if the helper returns a
+   password).
+
+All three feed the same `SecretString` wrapper, which redacts in `Debug` and `Display` so
+the token cannot be accidentally logged; reaching the inner string takes an explicit
+`expose()`, which `scripts/lint-secrets.mjs` is written to grep for at the sites that pass
+it to the API client.

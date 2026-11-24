@@ -4,6 +4,7 @@
 //! is the whole reason the roadmap puts a CLI before any GUI: standard output is a value a
 //! test can compare, and a window is not.
 
+pub mod secret;
 pub mod token;
 
 use contributron_domain::event::PullRequestObservation;
