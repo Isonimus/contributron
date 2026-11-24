@@ -34,10 +34,12 @@ decisions.
 
 ## Status
 
-**It can see, and nothing else.** One slice of milestone M1 has landed: a recorded GitHub
-payload becomes a normalized observation of a pull request and its review threads, and the
-CLI renders it. Read-only. Nothing is stored, nothing is polled, no rule fires, and no agent
-exists yet.
+**It can see and remember.** Two slices of milestone M1 have landed: a recorded GitHub
+payload becomes a normalized observation of a pull request and its review threads (slice
+0007), and that observation persists in a local SQLite store keyed by its content identity,
+so re-observing the same state is a no-op the database enforces rather than a check the
+caller remembered to perform (slice 0009, ADR-0010). Read-only. Nothing is polled, no rule
+fires, and no agent exists yet.
 
 Governance came first, and that ordering was deliberate. The design this project starts from
 is a multi-year platform, and the decisions that narrow it to something reachable are more
@@ -56,6 +58,17 @@ really acquired is an open decision, due before anything writes, and it is a lin
 
 ```console
 $ contributron capture --repo owner/name --pull-request 1 --out capture.json
+```
+
+Observations persist in a local SQLite file, keyed by the content digest from ADR-0008.
+Two writes of the same unchanged state leave one row; a process restart loses nothing.
+
+```console
+$ contributron record --capture capture.json --store ./events.sqlite3
+recorded
+$ contributron list --store ./events.sqlite3
+#1 fix(index): escape backslashes before pipes in table cells
+  unresolved threads: 1
 ```
 
 | What | Where |

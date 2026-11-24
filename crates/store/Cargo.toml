@@ -1,0 +1,25 @@
+[package]
+name = "contributron-store"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# One crate, one dependency direction: this crate reads and writes domain values; it has no
+# idea which adapter produced them (ADR-0001 applied to persistence, slice 0009). The GitHub
+# adapter does not depend on it either.
+[dependencies]
+contributron-domain = { workspace = true }
+rusqlite = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

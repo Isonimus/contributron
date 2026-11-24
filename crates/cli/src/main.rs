@@ -6,6 +6,7 @@ use contributron_cli::{render_state, token};
 use contributron_domain::actor::{Attribution, UserId, WorkerId};
 use contributron_domain::event::PullRequestObservation;
 use contributron_github::{PullRequestLocator, capture_pull_request, normalize_capture};
+use contributron_store::EventStore;
 use std::path::{Path, PathBuf};
 
 /// Until credentials and a real operator identity exist, every local invocation is the same
@@ -42,6 +43,21 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Normalize a recorded capture and persist it in the durable store.
+    Record {
+        /// Path to a recorded GraphQL capture.
+        #[arg(long)]
+        capture: PathBuf,
+        /// Path to the SQLite store (slice 0009, ADR-0010).
+        #[arg(long)]
+        store: PathBuf,
+    },
+    /// Render observed state read from the durable store.
+    List {
+        /// Path to the SQLite store (slice 0009, ADR-0010).
+        #[arg(long)]
+        store: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -53,7 +69,43 @@ fn main() -> Result<()> {
             pull_request,
             out,
         } => capture(&repo, pull_request, &out),
+        Command::Record { capture, store } => record_to_store(&capture, &store),
+        Command::List { store } => list_from_store(&store),
     }
+}
+
+fn record_to_store(capture: &Path, store_path: &Path) -> Result<()> {
+    use contributron_domain::event::PullRequestObservation;
+    use contributron_store::WriteOutcome;
+
+    let raw = std::fs::read_to_string(capture)
+        .with_context(|| format!("reading the capture at {}", capture.display()))?;
+    let pull_request = normalize_capture(&raw)
+        .with_context(|| format!("normalizing the capture at {}", capture.display()))?;
+    let attribution =
+        Attribution::local_operator(UserId::new(LOCAL_USER), WorkerId::new(LOCAL_WORKER));
+    let observation = PullRequestObservation::new(attribution, pull_request);
+
+    let store = EventStore::open(store_path, UserId::new(LOCAL_USER))
+        .with_context(|| format!("opening the store at {}", store_path.display()))?;
+    match store
+        .write(&observation)
+        .with_context(|| format!("writing to the store at {}", store_path.display()))?
+    {
+        WriteOutcome::Fresh => println!("recorded"),
+        WriteOutcome::Duplicate => println!("already recorded"),
+    }
+    Ok(())
+}
+
+fn list_from_store(path: &Path) -> Result<()> {
+    let store = EventStore::open(path, UserId::new(LOCAL_USER))
+        .with_context(|| format!("opening the store at {}", path.display()))?;
+    let observations = store
+        .list()
+        .with_context(|| format!("reading from the store at {}", path.display()))?;
+    print!("{}", render_state(&observations));
+    Ok(())
 }
 
 fn render(capture: &Path) -> Result<()> {

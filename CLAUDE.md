@@ -139,7 +139,7 @@ actually wired (R11), so a row cannot claim a check that runs nowhere.
 | 4 | Provider state is re-fetched from the provider immediately before any sensitive operation. An event payload is never the authority for mergeability, approval or branch protection. | ADR-0003 | review-only |
 | 5 | No DSL, parser, intermediate representation or visual editor until three workflows exist as ordinary Rust. | ADR-0004 | review-only |
 | 6 | Every recorded operation names all three identities: the user who owns or approved it, the worker that ran it, the agent that executed it. | ADR-0005 | review-only |
-| 7 | Persisted rows are owner-scoped even while exactly one owner exists. | ADR-0005 | review-only |
+| 7 | Persisted rows are owner-scoped even while exactly one owner exists. | ADR-0005, ADR-0010 | `verified_by:` `crates/store/tests/owner_scope.rs` |
 | 8 | `docs/roadmap.md` carries no open item, status column or checkbox. Open work is a ledger line. | ADR-0006 | review-only |
 | 9 | An event's identity is a digest of observed content only. Attribution is never part of it, and any further provider adapter produces the same identity for the same observed state. | ADR-0008 | `verified_by:` `crates/domain/tests/identity.rs` for the first two clauses; the cross-adapter clause is review-only until a second adapter exists |
 
