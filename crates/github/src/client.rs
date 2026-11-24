@@ -11,6 +11,7 @@
 //! conversation comments that `POST` on the same path appends to. Review-thread comments
 //! are a different endpoint and not what this rule posts.
 
+use contributron_domain::pull_request::Label;
 use contributron_poll::PullRequestLocator;
 use contributron_react::{ClientFuture, ExistingComment, ProviderClient, ProviderError};
 
@@ -141,6 +142,68 @@ impl ProviderClient for GitHubClient {
                     "GitHub's mergeability is still computing".to_owned(),
                 )),
             }
+        })
+    }
+
+    /// Slice 0016: list the labels currently attached to a pull request. A pull request is
+    /// an issue on the labels endpoint; `list_labels_for_issue` is the correct call.
+    ///
+    /// An unparseable label name (empty, padded) is skipped rather than failing the whole
+    /// list: a third-party label defined with a shape this code does not accept is not a
+    /// reason to refuse the rule's read path. A warning would belong here in a later
+    /// slice; for now the skip is silent because `needs-rebase` is the only label this rule
+    /// cares about, and that one is constructed from a known-good literal.
+    fn list_labels<'a>(&'a self, locator: &'a PullRequestLocator) -> ClientFuture<'a, Vec<Label>> {
+        Box::pin(async move {
+            let page = self
+                .inner
+                .issues(&locator.owner, &locator.repo)
+                .list_labels_for_issue(locator.number)
+                .per_page(COMMENT_PAGE_SIZE)
+                .send()
+                .await
+                .map_err(|e| ProviderError::Client(format!("listing labels: {e}")))?;
+            Ok(page
+                .items
+                .into_iter()
+                .filter_map(|l| Label::new(l.name).ok())
+                .collect())
+        })
+    }
+
+    /// Slice 0016: apply one label to a pull request. The endpoint is additive; applying a
+    /// label that is already present is a no-op on the server, but the caller is still
+    /// expected to short-circuit on `AlreadySettled` so the audit record is distinct.
+    fn add_label<'a>(
+        &'a self,
+        locator: &'a PullRequestLocator,
+        label: &'a Label,
+    ) -> ClientFuture<'a, ()> {
+        Box::pin(async move {
+            self.inner
+                .issues(&locator.owner, &locator.repo)
+                .add_labels(locator.number, &[label.as_str().to_owned()])
+                .await
+                .map_err(|e| ProviderError::Client(format!("adding a label: {e}")))?;
+            Ok(())
+        })
+    }
+
+    /// Slice 0016: remove one label from a pull request. Removing an absent label returns
+    /// 404 from the GitHub endpoint; the caller is expected to check with `list_labels`
+    /// first so this method is only called when the label is present.
+    fn remove_label<'a>(
+        &'a self,
+        locator: &'a PullRequestLocator,
+        label: &'a Label,
+    ) -> ClientFuture<'a, ()> {
+        Box::pin(async move {
+            self.inner
+                .issues(&locator.owner, &locator.repo)
+                .remove_label(locator.number, label.as_str())
+                .await
+                .map_err(|e| ProviderError::Client(format!("removing a label: {e}")))?;
+            Ok(())
         })
     }
 }

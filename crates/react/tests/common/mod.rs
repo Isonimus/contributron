@@ -9,13 +9,14 @@
 )]
 
 use contributron_domain::pull_request::{
-    Mergeable, ObservedPullRequest, PullRequestAuthor, PullRequestNumber, ReviewThread, ThreadId,
-    ThreadResolution,
+    Label, Mergeable, ObservedPullRequest, PullRequestAuthor, PullRequestNumber, ReviewThread,
+    ThreadId, ThreadResolution,
 };
 use contributron_poll::PullRequestLocator;
 use contributron_react::{
     ClientFuture, ExistingComment, MergeableHistory, ProviderClient, ProviderError,
 };
+use std::collections::BTreeSet;
 use std::sync::Mutex;
 
 /// Build an observation with `unresolved` + `resolved` threads, numbered.
@@ -78,10 +79,9 @@ pub enum LiveMerge {
     Computing,
 }
 
-/// Fake provider client: in-memory comments, records every post, and a swappable
-/// live-merge response for slice 0015 tests. Also carries the fake's stored "history
-/// settled mergeable" value so [`FakeClient`] can double as a [`MergeableHistory`] in the
-/// slice-0015 tests.
+/// Fake provider client: in-memory comments and labels, records every post and label
+/// mutation, and a swappable live-merge response for slice 0015/0016 tests. Doubles as a
+/// [`MergeableHistory`] for history-walk tests.
 #[derive(Debug)]
 pub struct FakeClient {
     existing: Mutex<Vec<ExistingComment>>,
@@ -89,6 +89,10 @@ pub struct FakeClient {
     live: Mutex<LiveMerge>,
     history: Mutex<Option<Mergeable>>,
     history_err: Mutex<Option<String>>,
+    labels: Mutex<BTreeSet<String>>,
+    labels_err: Mutex<Option<String>>,
+    added_labels: Mutex<Vec<String>>,
+    removed_labels: Mutex<Vec<String>>,
 }
 
 impl Default for FakeClient {
@@ -99,6 +103,10 @@ impl Default for FakeClient {
             live: Mutex::new(LiveMerge::NoConflict),
             history: Mutex::new(None),
             history_err: Mutex::new(None),
+            labels: Mutex::new(BTreeSet::new()),
+            labels_err: Mutex::new(None),
+            added_labels: Mutex::new(Vec::new()),
+            removed_labels: Mutex::new(Vec::new()),
         }
     }
 }
@@ -111,10 +119,7 @@ impl FakeClient {
             .collect();
         Self {
             existing: Mutex::new(existing),
-            posted: Mutex::new(Vec::new()),
-            live: Mutex::new(LiveMerge::NoConflict),
-            history: Mutex::new(None),
-            history_err: Mutex::new(None),
+            ..Self::default()
         }
     }
 
@@ -135,6 +140,35 @@ impl FakeClient {
     /// Force the history query to error on the next call.
     pub fn set_history_err(&self, message: impl Into<String>) {
         *self.history_err.lock().expect("history_err") = Some(message.into());
+    }
+
+    /// Seed the labels currently attached to the pull request.
+    pub fn set_labels(&self, labels: impl IntoIterator<Item = &'static str>) {
+        let mut guard = self.labels.lock().expect("labels");
+        guard.clear();
+        for l in labels {
+            guard.insert(l.to_owned());
+        }
+    }
+
+    /// Force the label list to error on the next call.
+    pub fn set_labels_err(&self, message: impl Into<String>) {
+        *self.labels_err.lock().expect("labels_err") = Some(message.into());
+    }
+
+    /// Snapshot of the labels currently attached.
+    pub fn labels_snapshot(&self) -> BTreeSet<String> {
+        self.labels.lock().expect("labels").clone()
+    }
+
+    /// Everything `add_label` was called with, in order.
+    pub fn added_labels(&self) -> Vec<String> {
+        self.added_labels.lock().expect("added").clone()
+    }
+
+    /// Everything `remove_label` was called with, in order.
+    pub fn removed_labels(&self) -> Vec<String> {
+        self.removed_labels.lock().expect("removed").clone()
     }
 }
 
@@ -163,8 +197,6 @@ impl ProviderClient for FakeClient {
     ) -> ClientFuture<'a, ()> {
         let body = body.to_owned();
         Box::pin(async move {
-            // A real provider would also list it afterwards; append so a second reactor call
-            // in the same test sees the post as existing.
             self.existing
                 .lock()
                 .map_err(|e| ProviderError::Client(format!("poisoned existing lock: {e}")))?
@@ -190,6 +222,57 @@ impl ProviderClient for FakeClient {
                     "live merge state still computing".to_owned(),
                 )),
             }
+        })
+    }
+
+    fn list_labels<'a>(&'a self, _locator: &'a PullRequestLocator) -> ClientFuture<'a, Vec<Label>> {
+        if let Some(msg) = self.labels_err.lock().expect("labels_err").clone() {
+            return Box::pin(async move { Err(ProviderError::Client(msg)) });
+        }
+        let snapshot = self.labels.lock().expect("labels").clone();
+        Box::pin(async move {
+            Ok(snapshot
+                .into_iter()
+                .filter_map(|s| Label::new(s).ok())
+                .collect())
+        })
+    }
+
+    fn add_label<'a>(
+        &'a self,
+        _locator: &'a PullRequestLocator,
+        label: &'a Label,
+    ) -> ClientFuture<'a, ()> {
+        let name = label.as_str().to_owned();
+        Box::pin(async move {
+            self.added_labels
+                .lock()
+                .map_err(|e| ProviderError::Client(format!("poisoned added lock: {e}")))?
+                .push(name.clone());
+            self.labels
+                .lock()
+                .map_err(|e| ProviderError::Client(format!("poisoned labels lock: {e}")))?
+                .insert(name);
+            Ok(())
+        })
+    }
+
+    fn remove_label<'a>(
+        &'a self,
+        _locator: &'a PullRequestLocator,
+        label: &'a Label,
+    ) -> ClientFuture<'a, ()> {
+        let name = label.as_str().to_owned();
+        Box::pin(async move {
+            self.removed_labels
+                .lock()
+                .map_err(|e| ProviderError::Client(format!("poisoned removed lock: {e}")))?
+                .push(name.clone());
+            self.labels
+                .lock()
+                .map_err(|e| ProviderError::Client(format!("poisoned labels lock: {e}")))?
+                .remove(&name);
+            Ok(())
         })
     }
 }

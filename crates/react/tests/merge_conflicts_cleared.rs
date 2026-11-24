@@ -19,7 +19,7 @@ use common::{FakeClient, LiveMerge, locator, pr_with_mergeable};
 use contributron_domain::actor::{UserId, WorkerId};
 use contributron_domain::pull_request::Mergeable;
 use contributron_react::{
-    MERGE_RULE_AGENT_ID, MERGE_RULE_MARKER, ReactError, ReactionOutcome,
+    MERGE_RULE_AGENT_ID, MERGE_RULE_MARKER, ReactError, ReactionKind, ReactionOutcome,
     react_merge_conflicts_cleared,
 };
 
@@ -53,16 +53,16 @@ async fn conflict_to_mergeable_with_clean_live_read_posts_once_with_marker() {
     .expect("react");
 
     match outcome {
-        ReactionOutcome::Posted {
-            attribution,
-            comment,
-        } => {
+        ReactionOutcome::Posted { receipt } => {
+            let body = match &receipt.kind {
+                ReactionKind::Commented { body } => body.clone(),
+                other => panic!("expected Commented receipt, got {other:?}"),
+            };
             assert!(
-                comment.body.contains(MERGE_RULE_MARKER),
-                "post lacked marker: {}",
-                comment.body,
+                body.contains(MERGE_RULE_MARKER),
+                "post lacked marker: {body}",
             );
-            match &attribution.agent {
+            match &receipt.attribution.agent {
                 contributron_domain::actor::ExecutingAgent::Agent { id } => {
                     assert_eq!(id.as_str(), MERGE_RULE_AGENT_ID);
                 }
@@ -178,7 +178,7 @@ async fn prior_marker_comment_blocks_second_post() {
     .expect("react");
 
     assert!(
-        matches!(outcome, ReactionOutcome::AlreadyPosted),
+        matches!(outcome, ReactionOutcome::AlreadySettled),
         "marker already present must short-circuit, got {outcome:?}",
     );
     assert_eq!(client.posts(), Vec::<String>::new());

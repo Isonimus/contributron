@@ -52,7 +52,8 @@ async fn a_failed_reaction_is_retried_on_the_next_unchanged_tick() {
                 }
             } else {
                 ReactionReport::Posted {
-                    agent_id: "rule:threads-cleared".into(),
+                    agent_ids: vec!["rule:threads-cleared".into()],
+                    errors: Vec::new(),
                 }
             }
         })

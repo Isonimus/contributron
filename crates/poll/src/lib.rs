@@ -153,24 +153,43 @@ pub type Reactor = Arc<
 /// What the reactor decided for one tick.
 ///
 /// Kept as plain strings and variants rather than the reactor crate's own `ReactionOutcome`
-/// so the dependency direction stays `react -> poll` only — this crate does not know the
+/// so the dependency direction stays `react -> poll` only: this crate does not know the
 /// shape of a provider attribution, only that a reactor returned a decision.
+///
+/// Slice 0016 widened `Posted` and `AlreadySettled` to carry a list of `agent_ids` (because
+/// multiple deterministic rules may run in a tick and each firing write is an invariant-6
+/// obligation) plus a list of `(agent_id, error_message)` pairs for rules that errored
+/// while their peers succeeded. `Failed` keeps a single error string because that variant
+/// is reserved for the case where every rule errored and the aggregate is reported as one
+/// message.
 #[derive(Debug, Clone)]
 pub enum ReactionReport {
-    /// The prior/new pair did not qualify; nothing was done.
+    /// Every rule reported `NotApplicable`; nothing was done.
     NotApplicable,
-    /// A prior post for this rule was already visible on the target; nothing was posted.
-    AlreadyPosted,
-    /// A comment was posted. `agent_id` names which rule ran (invariant 6).
-    Posted {
-        /// The rule's `agent_id`, as the reactor reported it.
-        agent_id: String,
+    /// No new write happened but at least one rule confirmed the desired state is already
+    /// in place (marker already present, label already applied or already absent). The
+    /// `agent_ids` list carries the rules that reached this conclusion; `errors` carries
+    /// any peer rule that failed without preventing the idempotent outcome.
+    AlreadySettled {
+        /// The rule ids that reported `AlreadySettled` this tick.
+        agent_ids: Vec<String>,
+        /// Non-fatal per-rule errors from peer rules on the same tick.
+        errors: Vec<(String, String)>,
     },
-    /// The reactor failed. The error is surfaced on the tick stream and the loop continues;
-    /// per slice 0014 the write-path failure does not halt the read-path (the next tick's
-    /// fetch and store write still run).
+    /// At least one rule wrote something. `agent_ids` names every rule that wrote;
+    /// invariant 6 then has every write attributed. `errors` carries any peer rule that
+    /// failed without preventing a sibling's write.
+    Posted {
+        /// The rule ids that produced a write this tick.
+        agent_ids: Vec<String>,
+        /// Non-fatal per-rule errors from peer rules on the same tick.
+        errors: Vec<(String, String)>,
+    },
+    /// Every rule failed. The reactor's error is surfaced on the tick stream and the loop
+    /// continues; per slice 0014 the write-path failure does not halt the read-path (the
+    /// next tick's fetch and store write still run).
     Failed {
-        /// The reactor's error, stringified. The reactor is responsible for not leaking a
+        /// The aggregated error, stringified. The reactor is responsible for not leaking a
         /// credential into this string.
         error: String,
     },
@@ -501,7 +520,7 @@ fn success_delay(state: &TaskState, jitter_pending: &mut bool) -> Duration {
 
 /// Advance `prior` on reactor success, or park `observed` for retry on reactor failure.
 ///
-/// A `NotApplicable`, `AlreadyPosted` or `Posted` decision means the reactor compared the
+/// A `NotApplicable`, `AlreadySettled` or `Posted` decision means the reactor compared the
 /// prior against the new and reached a conclusion the next tick's comparison can build on;
 /// `prior` moves forward. A `Failed` decision means the comparison never completed, so
 /// `prior` stays where it was and the new observation parks as `pending_retry` for the next
@@ -518,7 +537,7 @@ fn advance_or_park(
             *pending_retry = Some(observed);
         }
         ReactionReport::NotApplicable
-        | ReactionReport::AlreadyPosted
+        | ReactionReport::AlreadySettled { .. }
         | ReactionReport::Posted { .. } => {
             *prior = Some(observed);
             *pending_retry = None;

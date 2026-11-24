@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use contributron_cli::token::Source as TokenSource;
 use contributron_cli::{render_state, token};
 use contributron_domain::actor::{UserId, WorkerId};
+use contributron_domain::pull_request::Label;
 use contributron_github::{
     GitHubClient, PullRequestLocator as GhLocator, capture_pull_request, normalize_capture,
 };
@@ -14,7 +15,7 @@ use contributron_poll::{
 };
 use contributron_react::{
     ClientFuture, ExistingComment, MergeableHistory, ProviderClient, ProviderError,
-    ReactionOutcome, react, react_merge_conflicts_cleared,
+    combine_rule_results, react, react_merge_conflicts_cleared, react_needs_rebase_label,
 };
 use contributron_store::EventStore;
 use std::path::{Path, PathBuf};
@@ -355,21 +356,25 @@ fn build_reactor(
         let owner = owner.clone();
         let worker = worker.clone();
         Box::pin(async move {
-            // Two rules. Both run on every tick: a first-rule error must not starve the
-            // second rule (finding 4 of the 2026-11-25 review), and a second-rule error
-            // must not swallow a first-rule Posted (same finding). The combination is
-            // defined so a real `Posted` wins over any error — the audit record of a
-            // write that actually happened is more valuable than the news that an
-            // unrelated rule failed.
-            let first_future = react(
+            // Three rules (slice 0014, 0015, 0016). All three run on every tick: one rule's
+            // error must not starve a sibling, and one sibling's error must not swallow
+            // another's write (finding 4 of the 2026-11-25 review). The combiner folds
+            // the receipts across rules so every write that happened is attributed.
+            //
+            // Sequential rather than joined: the shared octocrab client already serialises
+            // its own requests in practice, and an `Arc<dyn ProviderClient>` offers no
+            // concurrency gain here. Sequential keeps the GitHub rate-limit footprint
+            // predictable.
+            let threads = react(
                 &owner,
                 &worker,
                 &locator,
                 prior.as_ref(),
                 &new,
                 client.as_ref(),
-            );
-            let second_future = react_merge_conflicts_cleared(
+            )
+            .await;
+            let merge = react_merge_conflicts_cleared(
                 &owner,
                 &worker,
                 &locator,
@@ -377,14 +382,23 @@ fn build_reactor(
                 &new,
                 history.as_ref(),
                 client.as_ref(),
-            );
-            // Run sequentially rather than joined: the shared octocrab client already
-            // serialises its own requests in practice, and an `Arc<dyn ProviderClient>`
-            // offers no concurrency gain here. Sequential keeps the GitHub rate-limit
-            // footprint predictable.
-            let first = first_future.await;
-            let second = second_future.await;
-            combine_rules(first, second)
+            )
+            .await;
+            let label = react_needs_rebase_label(
+                &owner,
+                &worker,
+                &locator,
+                prior.as_ref(),
+                &new,
+                history.as_ref(),
+                client.as_ref(),
+            )
+            .await;
+            combine_rule_results(&[
+                (contributron_react::RULE_AGENT_ID, threads),
+                (contributron_react::MERGE_RULE_AGENT_ID, merge),
+                (contributron_react::LABEL_RULE_AGENT_ID, label),
+            ])
         }) as ReactorFuture
     });
     Ok(reactor)
@@ -412,59 +426,6 @@ impl MergeableHistory for StoreMergeableHistory {
             .latest_settled_mergeable_for_number(locator.number)
             .map_err(|e| format!("reading history: {e}"))?;
         Ok(found.map(|o| o.mergeable))
-    }
-}
-
-/// Fold two rule results into the single [`ReactionReport`] the loop carries per tick.
-///
-/// Precedence:
-/// 1. A real `Posted` from either rule wins — a committed write must be reported even if
-///    the other rule errored (finding 4 of the 2026-11-25 review).
-/// 2. `AlreadyPosted` from either rule beats `NotApplicable` from the other.
-/// 3. A `Failed` beats `NotApplicable`: silent swallowing of an error is worse than the
-///    other rule having nothing to say.
-/// 4. If both rules posted, only one agent-id fits the tick; we pick rule 1's with a note
-///    in the comment above `build_reactor`. The audit gap is ledgered under slice 0015
-///    rather than hidden here.
-fn combine_rules(
-    first: Result<ReactionOutcome, contributron_react::ReactError>,
-    second: Result<ReactionOutcome, contributron_react::ReactError>,
-) -> ReactionReport {
-    match (first, second) {
-        (Ok(a), Ok(b)) => outcome_to_report(pick_outcome(a, b)),
-        (Ok(a @ (ReactionOutcome::Posted { .. } | ReactionOutcome::AlreadyPosted)), Err(_)) => {
-            outcome_to_report(a)
-        }
-        (Err(_), Ok(b @ (ReactionOutcome::Posted { .. } | ReactionOutcome::AlreadyPosted))) => {
-            outcome_to_report(b)
-        }
-        (Err(e), _) | (_, Err(e)) => ReactionReport::Failed {
-            error: format!("{e}"),
-        },
-    }
-}
-
-fn outcome_to_report(outcome: ReactionOutcome) -> ReactionReport {
-    match outcome {
-        ReactionOutcome::NotApplicable => ReactionReport::NotApplicable,
-        ReactionOutcome::AlreadyPosted => ReactionReport::AlreadyPosted,
-        ReactionOutcome::Posted { attribution, .. } => {
-            let agent_id = match &attribution.agent {
-                contributron_domain::actor::ExecutingAgent::Agent { id } => id.as_str().to_owned(),
-                contributron_domain::actor::ExecutingAgent::NoAgent => "no-agent".to_owned(),
-            };
-            ReactionReport::Posted { agent_id }
-        }
-    }
-}
-
-fn pick_outcome(a: ReactionOutcome, b: ReactionOutcome) -> ReactionOutcome {
-    match (&a, &b) {
-        (ReactionOutcome::Posted { .. }, _) => a,
-        (_, ReactionOutcome::Posted { .. }) => b,
-        (ReactionOutcome::AlreadyPosted, _) => a,
-        (_, ReactionOutcome::AlreadyPosted) => b,
-        _ => ReactionOutcome::NotApplicable,
     }
 }
 
@@ -516,6 +477,44 @@ impl ProviderClient for MissingTokenClient {
             ))
         })
     }
+
+    fn list_labels<'a>(&'a self, _locator: &'a PullRequestLocator) -> ClientFuture<'a, Vec<Label>> {
+        Box::pin(async {
+            Err(ProviderError::Client(
+                "no GitHub token available for the write path. Pass --token-path, set \
+                 CONTRIBUTRON_TOKEN, or store a github.com credential (ADR-0013)."
+                    .to_owned(),
+            ))
+        })
+    }
+
+    fn add_label<'a>(
+        &'a self,
+        _locator: &'a PullRequestLocator,
+        _label: &'a Label,
+    ) -> ClientFuture<'a, ()> {
+        Box::pin(async {
+            Err(ProviderError::Client(
+                "no GitHub token available for the write path. Pass --token-path, set \
+                 CONTRIBUTRON_TOKEN, or store a github.com credential (ADR-0013)."
+                    .to_owned(),
+            ))
+        })
+    }
+
+    fn remove_label<'a>(
+        &'a self,
+        _locator: &'a PullRequestLocator,
+        _label: &'a Label,
+    ) -> ClientFuture<'a, ()> {
+        Box::pin(async {
+            Err(ProviderError::Client(
+                "no GitHub token available for the write path. Pass --token-path, set \
+                 CONTRIBUTRON_TOKEN, or store a github.com credential (ADR-0013)."
+                    .to_owned(),
+            ))
+        })
+    }
 }
 
 fn report_tick(tick: &Tick) {
@@ -549,15 +548,34 @@ fn report_tick(tick: &Tick) {
 fn report_reaction(tick: &Tick) {
     match &tick.reaction {
         None | Some(ReactionReport::NotApplicable) => {}
-        Some(ReactionReport::AlreadyPosted) => {
-            println!("reaction-skipped {} (marker already present)", tick.locator);
+        Some(ReactionReport::AlreadySettled { agent_ids, errors }) => {
+            println!(
+                "reaction-skipped {} (already settled by {})",
+                tick.locator,
+                agent_ids.join(", "),
+            );
+            report_peer_errors(tick, errors);
         }
-        Some(ReactionReport::Posted { agent_id }) => {
-            println!("reaction-posted {} by {}", tick.locator, agent_id);
+        Some(ReactionReport::Posted { agent_ids, errors }) => {
+            println!(
+                "reaction-posted {} by {}",
+                tick.locator,
+                agent_ids.join(", "),
+            );
+            report_peer_errors(tick, errors);
         }
         Some(ReactionReport::Failed { error }) => {
             eprintln!("reaction-error {}: {}", tick.locator, error);
         }
+    }
+}
+
+fn report_peer_errors(tick: &Tick, errors: &[(String, String)]) {
+    for (agent_id, message) in errors {
+        eprintln!(
+            "reaction-peer-error {} ({}): {}",
+            tick.locator, agent_id, message,
+        );
     }
 }
 

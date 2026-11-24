@@ -111,12 +111,6 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
   deserializer that distinguishes "field absent" from "field null", and route the former to
   a field-named `NormalizeError::MissingField`. Found by the 2026-11-25 adversarial review
   of slice 0015 (finding 6) (ADR-0001).
-- [feature] Extend `ReactionReport::Posted` (or the tick-report surface) so a tick in
-  which *both* deterministic rules posted records both `agent_id`s rather than dropping
-  one. Today `combine_rules` picks one via `pick_outcome`. The overlap is improbable —
-  the two rules fire on orthogonal observed fields — but when it happens, invariant 6 is
-  satisfied for one write and not the other. Found by the 2026-11-25 adversarial review
-  of slice 0015 (finding 4 residual) (ADR-0005).
 - [feature] Paginate `reviewThreads`. A capture reads the first 100 threads
   (`THREAD_PAGE_SIZE` in `crates/github/src/capture.rs`), and a pull request with more cannot
   be observed at all: the normalizer refuses a payload whose `pageInfo.hasNextPage` is true

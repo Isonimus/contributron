@@ -1,18 +1,24 @@
-//! Deterministic reactions to observed state transitions (slice 0014).
+//! Deterministic reactions to observed state transitions (slice 0014, slice 0015, slice 0016).
 //!
-//! The first rule: when a pull request's unresolved review threads transition from non-zero
-//! to zero between two consecutive observations, post one comment on that pull request. The
-//! comment carries a stable idempotency marker, scanned on the pull request's existing
-//! comments before any post, so a restart cannot cause a second comment.
+//! Three rules ship today:
 //!
-//! This crate holds the pure logic: compare a pair of observations, decide whether to react,
-//! query a provider client for existing comments, and ask it to post one. The provider
-//! client is a trait, not a concrete octocrab client, so the rule is testable without a
-//! network and the GitHub-specific wiring stays in `crates/github/` (invariant 1).
+//! - `react`: threads-cleared (slice 0014). Post one marker comment when the unresolved
+//!   review-thread count transitions from non-zero to zero.
+//! - `react_merge_conflicts_cleared` (slice 0015). Post one marker comment when the stored
+//!   mergeable state transitions from `Conflicting` to `Mergeable`, gated on a live
+//!   provider re-fetch.
+//! - `react_needs_rebase_label` (slice 0016). Apply or remove the `needs-rebase` label
+//!   when the stored mergeable state crosses the Mergeable/Conflicting boundary in either
+//!   direction, gated on the same live provider re-fetch. Label-level idempotency is
+//!   `list_labels` plus a set membership check, so no marker comment is needed.
+//!
+//! This crate holds the pure logic. The provider client is a trait, not a concrete octocrab
+//! client, so every rule is testable without a network and the GitHub-specific wiring
+//! stays in `crates/github/` (invariant 1).
 
 use contributron_domain::actor::{AgentId, Attribution, ExecutingAgent, UserId, WorkerId};
-use contributron_domain::pull_request::{Mergeable, ObservedPullRequest};
-use contributron_poll::PullRequestLocator;
+use contributron_domain::pull_request::{Label, Mergeable, ObservedPullRequest};
+use contributron_poll::{PullRequestLocator, ReactionReport};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -36,6 +42,15 @@ pub const MERGE_RULE_MARKER: &str = "<!-- contributron-rule:merge-conflicts-clea
 /// The `agent_id` written to the store for every reaction the merge-conflicts-cleared rule
 /// produces (slice 0015).
 pub const MERGE_RULE_AGENT_ID: &str = "rule:merge-conflicts-cleared";
+
+/// The `agent_id` written to the store for the needs-rebase-label rule (slice 0016).
+pub const LABEL_RULE_AGENT_ID: &str = "rule:needs-rebase-label";
+
+/// The label the needs-rebase-label rule applies and removes (slice 0016).
+///
+/// A string constant here, wrapped into a validated [`Label`] on use. Configurability is
+/// deferred: three workflows before a DSL (ADR-0004).
+pub const NEEDS_REBASE_LABEL: &str = "needs-rebase";
 
 /// A comment this rule would post, or did post.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,11 +107,9 @@ pub enum ProviderError {
 
 /// What the reactor needs from whichever provider is on the other end.
 ///
-/// A trait rather than a concrete type so the rule is testable without a network and so a
+/// A trait rather than a concrete type so the rules are testable without a network and so a
 /// second provider adapter (the GitLab ledger item) can implement it without reshaping
-/// this crate. Two methods, no more: everything invariant 4 requires is either already in
-/// the observation this rule was called with, or expressly out of scope (mergeability,
-/// approval, branch protection).
+/// this crate.
 pub trait ProviderClient: Send + Sync {
     /// List the comments on a pull request, as the reactor needs them (body only).
     ///
@@ -119,21 +132,16 @@ pub trait ProviderClient: Send + Sync {
         body: &'a str,
     ) -> ClientFuture<'a, ()>;
 
-    /// The invariant-4 live read, specialized for the conflicts-cleared rule: does the
-    /// pull request *right now* have any merge conflict?
+    /// The invariant-4 live read, specialized for the conflicts-cleared and
+    /// needs-rebase-label rules: does the pull request *right now* have any merge conflict?
     ///
-    /// Returns [`Ok(false)`] when the provider confirms the merge is NOT conflicting (the
-    /// non-dirty settled states: a `clean`/`unstable`/`has_hooks`/`blocked`/`behind` pull request
-    /// all have the merge computed and free of conflicts, so the rule may post). Returns
-    /// [`Ok(true)`] when the provider says the merge still has a conflict (dirty). For any
-    /// state the provider has not yet settled on (its internal unknown/computing state,
-    /// or a draft/null the REST payload does not pin down), returns a
-    /// [`ProviderError::Client`] so the caller's retry loop can park the observation and
-    /// try again on the next tick. The method is deliberately not a bool: a false positive
-    /// here (treating "still computing" as "no conflict") would let the rule post on a
-    /// pull request whose conflict was in fact still present, and silently losing the
-    /// transition on a transient computing state (finding 2 of the 2026-11-25 review)
-    /// would miss the common GitHub path.
+    /// Returns `Ok(false)` when the provider confirms the merge is NOT conflicting (the
+    /// non-dirty settled states: a `clean`/`unstable`/`has_hooks`/`blocked`/`behind` pull
+    /// request all have the merge computed and free of conflicts). Returns `Ok(true)` when
+    /// the provider says the merge still has a conflict (dirty). For any state the provider
+    /// has not yet settled on (its internal unknown/computing state, or a draft/null the REST
+    /// payload does not pin down), returns a [`ProviderError::Client`] so the caller's retry
+    /// path can park the observation and try again on the next tick.
     ///
     /// # Errors
     ///
@@ -143,6 +151,70 @@ pub trait ProviderClient: Send + Sync {
         &'a self,
         locator: &'a PullRequestLocator,
     ) -> ClientFuture<'a, bool>;
+
+    /// List the labels currently attached to a pull request (slice 0016).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] if the provider call fails.
+    fn list_labels<'a>(&'a self, locator: &'a PullRequestLocator) -> ClientFuture<'a, Vec<Label>>;
+
+    /// Add `label` to a pull request (slice 0016). Idempotent on the provider side, but the
+    /// caller is still expected to short-circuit on an already-present label so the
+    /// `AlreadySettled` outcome is distinct from a real write.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] if the provider call fails.
+    fn add_label<'a>(
+        &'a self,
+        locator: &'a PullRequestLocator,
+        label: &'a Label,
+    ) -> ClientFuture<'a, ()>;
+
+    /// Remove `label` from a pull request (slice 0016).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] if the provider call fails.
+    fn remove_label<'a>(
+        &'a self,
+        locator: &'a PullRequestLocator,
+        label: &'a Label,
+    ) -> ClientFuture<'a, ()>;
+}
+
+/// One concrete write a rule produced (slice 0016).
+///
+/// A single rule produces either one receipt (`Posted`) or none (`NotApplicable` or
+/// `AlreadySettled`). The CLI's combiner concatenates receipts across rules so a tick that
+/// posts a comment *and* removes a label records both writes with their own attributions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReactionReceipt {
+    /// Who the store should record the write under (invariant 6).
+    pub attribution: Attribution,
+    /// What the rule did.
+    pub kind: ReactionKind,
+}
+
+/// The shape of a single write (slice 0016).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReactionKind {
+    /// A comment was posted.
+    Commented {
+        /// The posted body (marker plus prose).
+        body: String,
+    },
+    /// A label was applied.
+    LabelApplied {
+        /// Which label.
+        label: Label,
+    },
+    /// A label was removed.
+    LabelRemoved {
+        /// Which label.
+        label: Label,
+    },
 }
 
 /// What a reaction call decided.
@@ -150,14 +222,14 @@ pub trait ProviderClient: Send + Sync {
 pub enum ReactionOutcome {
     /// The prior/new pair did not cross the transition; nothing was done.
     NotApplicable,
-    /// The marker was already present on the pull request; nothing was posted.
-    AlreadyPosted,
-    /// A comment was posted. The attribution recorded alongside.
+    /// The desired post-write state was already in place (marker present for a comment
+    /// rule; label already applied or already absent for the label rule). No new write;
+    /// invariant 6 is satisfied by the existing state the rule chose not to disturb.
+    AlreadySettled,
+    /// A write happened. The receipt names what and who.
     Posted {
-        /// Who the store should record the write under (invariant 6).
-        attribution: Attribution,
-        /// What was posted.
-        comment: CommentBody,
+        /// What was written.
+        receipt: ReactionReceipt,
     },
 }
 
@@ -177,8 +249,8 @@ pub enum ReactError {
 /// Access to settled prior mergeable observations past the immediate `prior` the poll
 /// loop caches in memory. Needed because a GitHub `mergeable: null` tick normalizes to
 /// [`Mergeable::Unknown`], which the poll loop records as the new in-memory prior; the
-/// stored history still carries the earlier `Conflicting` row, and that is the evidence
-/// the rule has to walk back to.
+/// stored history still carries the earlier settled row, and that is the evidence the
+/// rules walk back to.
 pub trait MergeableHistory: Send + Sync {
     /// The most recent stored mergeable observation for this pull request whose value is
     /// not [`Mergeable::Unknown`]. Returns `Ok(None)` when the store has no such row.
@@ -190,14 +262,25 @@ pub trait MergeableHistory: Send + Sync {
     fn latest_settled(&self, locator: &PullRequestLocator) -> Result<Option<Mergeable>, String>;
 }
 
-/// Examines a pair of observations and decides whether to react.
+/// Build the standard three-identity [`Attribution`] a rule records with every write.
+fn attribution_for(owner: &UserId, worker: &WorkerId, agent_id: &str) -> Attribution {
+    Attribution {
+        user: owner.clone(),
+        worker: worker.clone(),
+        agent: ExecutingAgent::Agent {
+            id: AgentId::new(agent_id),
+        },
+    }
+}
+
+/// Examines a pair of observations and decides whether to react (slice 0014).
 ///
 /// `prior` is the most recent observation of the same `(owner, number)` before `new`, or
 /// `None` if `new` is the first observation we hold. The rule fires only when prior is
 /// `Some` and its unresolved count is non-zero *and* `new`'s unresolved count is zero.
 ///
 /// The idempotency check runs before any post: the provider is asked for existing comments,
-/// and if any carries [`RULE_MARKER`] the reactor returns [`ReactionOutcome::AlreadyPosted`]
+/// and if any carries [`RULE_MARKER`] the reactor returns [`ReactionOutcome::AlreadySettled`]
 /// without posting. One extra provider call per qualifying transition, in exchange for
 /// surviving restarts and store wipes without a new schema column.
 ///
@@ -218,25 +301,17 @@ pub async fn react(
 
     let existing = client.list_comments(locator).await?;
     if existing.iter().any(|c| c.body.contains(RULE_MARKER)) {
-        return Ok(ReactionOutcome::AlreadyPosted);
+        return Ok(ReactionOutcome::AlreadySettled);
     }
 
     let comment = CommentBody::for_threads_cleared();
     client.post_comment(locator, &comment.body).await?;
 
     Ok(ReactionOutcome::Posted {
-        attribution: Attribution {
-            user: owner.clone(),
-            worker: worker.clone(),
-            // The `rule:` prefix in the id names this as a deterministic rule rather than
-            // an AI agent; the enum carries both because the store writes one `agent`
-            // column (invariant 6). A later ADR earns a distinct variant if a second
-            // deterministic rule ships.
-            agent: ExecutingAgent::Agent {
-                id: AgentId::new(RULE_AGENT_ID),
-            },
+        receipt: ReactionReceipt {
+            attribution: attribution_for(owner, worker, RULE_AGENT_ID),
+            kind: ReactionKind::Commented { body: comment.body },
         },
-        comment,
     })
 }
 
@@ -246,10 +321,8 @@ fn is_qualifying_transition(
     new: &ObservedPullRequest,
 ) -> bool {
     let Some(prior) = prior else {
-        // Scenario 3 of slice 0014: first observation, no transition to detect.
         return false;
     };
-    // Scenario 2: steady-state zero does not fire.
     prior.unresolved_thread_count() > 0 && new.unresolved_thread_count() == 0
 }
 
@@ -257,19 +330,10 @@ fn is_qualifying_transition(
 /// `Conflicting` to `Mergeable`, re-fetch the provider's authoritative state and post one
 /// marker comment if the live read confirms the transition.
 ///
-/// The stored transition is evidence; the live `is_mergeable_clean_now` call is authority
-/// (standing invariant 4, ADR-0003). A disagreement between them returns
-/// [`ReactionOutcome::NotApplicable`], never a post: the payload is a lagging snapshot and
-/// posting on it would call a pull request mergeable at the moment it is not.
-///
-/// Idempotency follows slice 0014's shape: list existing comments and look for
-/// [`MERGE_RULE_MARKER`] before posting. Reuses the same [`ProviderClient::list_comments`]
-/// surface, so the slice-0014 pagination gap ledgered on it covers this rule too.
-///
 /// # Errors
 ///
 /// Returns [`ReactError::Provider`] if the live-mergeability read, listing comments, or
-/// posting a comment failed.
+/// posting a comment failed. Returns [`ReactError::History`] if the history walk failed.
 pub async fn react_merge_conflicts_cleared(
     owner: &UserId,
     worker: &WorkerId,
@@ -283,51 +347,28 @@ pub async fn react_merge_conflicts_cleared(
         return Ok(ReactionOutcome::NotApplicable);
     }
 
-    // Invariant 4 bite: the stored transition is evidence, this live read is authority.
-    // A `Client(...)` error from the provider (including "still computing") bubbles up as
-    // [`ReactError::Provider`], which the CLI reactor closure turns into
-    // `ReactionReport::Failed` — the poll loop parks the observation and retries on the
-    // next tick, so the common GitHub pattern of `Conflicting → Unknown → Mergeable` (the
-    // REST payload lagging behind GraphQL) no longer silently loses the transition
-    // (finding 2 of the 2026-11-25 review).
     if client.live_merge_has_conflict(locator).await? {
-        // Payload said the conflict cleared; the live provider still reports it dirty.
-        // Return `NotApplicable` rather than `Failed`: this is genuine disagreement, not
-        // a transient non-answer, so a park-and-retry would just re-read the same dirty
-        // state each tick. The next Fresh observation (when the conflict really clears)
-        // will drive another attempt.
         return Ok(ReactionOutcome::NotApplicable);
     }
 
     let existing = client.list_comments(locator).await?;
     if existing.iter().any(|c| c.body.contains(MERGE_RULE_MARKER)) {
-        return Ok(ReactionOutcome::AlreadyPosted);
+        return Ok(ReactionOutcome::AlreadySettled);
     }
 
     let comment = CommentBody::for_merge_conflicts_cleared();
     client.post_comment(locator, &comment.body).await?;
 
     Ok(ReactionOutcome::Posted {
-        attribution: Attribution {
-            user: owner.clone(),
-            worker: worker.clone(),
-            agent: ExecutingAgent::Agent {
-                id: AgentId::new(MERGE_RULE_AGENT_ID),
-            },
+        receipt: ReactionReceipt {
+            attribution: attribution_for(owner, worker, MERGE_RULE_AGENT_ID),
+            kind: ReactionKind::Commented { body: comment.body },
         },
-        comment,
     })
 }
 
-/// Qualifying transition for the merge-conflicts-cleared rule: the new observation
-/// records `Mergeable`, and the most recent stored *settled* mergeable (one that is not
-/// [`Mergeable::Unknown`]) recorded `Conflicting`.
-///
-/// Walking the history past the immediate `prior` is what fixes the `Conflicting →
-/// Unknown → Mergeable` miss (finding 1 of the 2026-11-25 review): the poll loop
-/// overwrites `prior` on every `NotApplicable`, so a single `Unknown` tick erases the
-/// Conflicting evidence from memory. The store still carries the earlier row, and that
-/// is what the rule reads here.
+/// Qualifying transition for the merge-conflicts-cleared rule: the new observation records
+/// `Mergeable`, and the most recent stored *settled* mergeable recorded `Conflicting`.
 fn is_merge_conflicts_cleared_transition(
     locator: &PullRequestLocator,
     prior: Option<&ObservedPullRequest>,
@@ -337,9 +378,6 @@ fn is_merge_conflicts_cleared_transition(
     if new.mergeable != Mergeable::Mergeable {
         return Ok(false);
     }
-    // Cheap path: the in-memory prior already carries a settled Conflicting state, so
-    // the store call is skipped. Rules of this type run every tick; a store read per
-    // tick on the hot path would cost nothing visible but saving it is cheap.
     if let Some(prior) = prior {
         if prior.mergeable == Mergeable::Conflicting {
             return Ok(true);
@@ -348,11 +386,190 @@ fn is_merge_conflicts_cleared_transition(
             return Ok(false);
         }
     }
-    // Immediate prior is either absent or `Unknown`. Walk back through the store.
     let settled = history
         .latest_settled(locator)
         .map_err(ReactError::History)?;
     Ok(settled == Some(Mergeable::Conflicting))
+}
+
+/// Which direction of the Mergeable/Conflicting transition the label rule is reacting to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LabelTransition {
+    /// Mergeable moved to Conflicting: apply the `needs-rebase` label.
+    Apply,
+    /// Conflicting moved to Mergeable: remove the `needs-rebase` label.
+    Remove,
+}
+
+/// Slice 0016 rule: when a pull request's stored mergeability crosses the
+/// Mergeable/Conflicting boundary in either direction, re-fetch the provider's
+/// authoritative state and either apply or remove the `needs-rebase` label.
+///
+/// Idempotency is label-level: `list_labels` reports what is currently attached, and the
+/// rule short-circuits to [`ReactionOutcome::AlreadySettled`] when the desired post-write
+/// state already holds. No marker comment is used; the label set is the source of truth.
+///
+/// # Errors
+///
+/// Returns [`ReactError::Provider`] if the live-mergeability read, listing labels, or
+/// applying/removing a label failed. Returns [`ReactError::History`] if the history walk
+/// failed.
+pub async fn react_needs_rebase_label(
+    owner: &UserId,
+    worker: &WorkerId,
+    locator: &PullRequestLocator,
+    prior: Option<&ObservedPullRequest>,
+    new: &ObservedPullRequest,
+    history: &dyn MergeableHistory,
+    client: &dyn ProviderClient,
+) -> Result<ReactionOutcome, ReactError> {
+    let Some(transition) = needs_rebase_transition(locator, prior, new, history)? else {
+        return Ok(ReactionOutcome::NotApplicable);
+    };
+
+    let live_conflict = client.live_merge_has_conflict(locator).await?;
+    let expected_conflict = match transition {
+        LabelTransition::Apply => true,
+        LabelTransition::Remove => false,
+    };
+    if live_conflict != expected_conflict {
+        // Payload says we transitioned, live read disagrees. Mirrors slice 0015's
+        // disagreement handling: not a retryable non-answer, so `NotApplicable` rather than
+        // `ReactError::Provider`.
+        return Ok(ReactionOutcome::NotApplicable);
+    }
+
+    let label = needs_rebase_label();
+    let currently_present = client
+        .list_labels(locator)
+        .await?
+        .into_iter()
+        .any(|l| l == label);
+
+    match transition {
+        LabelTransition::Apply => {
+            if currently_present {
+                return Ok(ReactionOutcome::AlreadySettled);
+            }
+            client.add_label(locator, &label).await?;
+            Ok(ReactionOutcome::Posted {
+                receipt: ReactionReceipt {
+                    attribution: attribution_for(owner, worker, LABEL_RULE_AGENT_ID),
+                    kind: ReactionKind::LabelApplied { label },
+                },
+            })
+        }
+        LabelTransition::Remove => {
+            if !currently_present {
+                return Ok(ReactionOutcome::AlreadySettled);
+            }
+            client.remove_label(locator, &label).await?;
+            Ok(ReactionOutcome::Posted {
+                receipt: ReactionReceipt {
+                    attribution: attribution_for(owner, worker, LABEL_RULE_AGENT_ID),
+                    kind: ReactionKind::LabelRemoved { label },
+                },
+            })
+        }
+    }
+}
+
+/// The canonical [`Label`] value for the needs-rebase rule. Panics are impossible here
+/// because [`NEEDS_REBASE_LABEL`] is a trimmed non-empty literal: a `const` cannot run the
+/// validator, so the first call to this function is the check.
+#[allow(clippy::expect_used)]
+fn needs_rebase_label() -> Label {
+    Label::new(NEEDS_REBASE_LABEL).expect("NEEDS_REBASE_LABEL is a valid Label by construction")
+}
+
+/// Qualifying transition for the needs-rebase-label rule: either Mergeable→Conflicting
+/// (Apply) or Conflicting→Mergeable (Remove). Uses the history-walk bridge when the
+/// in-memory prior is `Unknown` or absent, mirroring slice 0015.
+fn needs_rebase_transition(
+    locator: &PullRequestLocator,
+    prior: Option<&ObservedPullRequest>,
+    new: &ObservedPullRequest,
+    history: &dyn MergeableHistory,
+) -> Result<Option<LabelTransition>, ReactError> {
+    let settled_prior = match prior.map(|p| p.mergeable) {
+        Some(Mergeable::Conflicting) => Some(Mergeable::Conflicting),
+        Some(Mergeable::Mergeable) => Some(Mergeable::Mergeable),
+        Some(Mergeable::Unknown) | None => history
+            .latest_settled(locator)
+            .map_err(ReactError::History)?,
+    };
+    match (settled_prior, new.mergeable) {
+        (Some(Mergeable::Mergeable), Mergeable::Conflicting) => Ok(Some(LabelTransition::Apply)),
+        (Some(Mergeable::Conflicting), Mergeable::Mergeable) => Ok(Some(LabelTransition::Remove)),
+        _ => Ok(None),
+    }
+}
+
+/// Fold a slice of per-rule results into the single [`ReactionReport`] the poll loop
+/// carries per tick (slice 0016).
+///
+/// Every rule's outcome is independent: a rule that posted and a rule that errored coexist
+/// in the same report, with the write's `agent_id` in `agent_ids` and the error's
+/// `agent_id` in `errors`. Classification into `Posted` / `AlreadySettled` /
+/// `NotApplicable` / `Failed` follows the highest-value outcome: at least one write =>
+/// `Posted`; else at least one idempotent settle => `AlreadySettled`; else every rule
+/// errored => `Failed`; else `NotApplicable`.
+///
+/// Each entry pairs a *fallback* agent id (the rule's stable literal, used when a rule
+/// errored before producing a receipt or when a `NoAgent` attribution somehow reached the
+/// combiner) with that rule's `Result`. The combiner is total on the input: an empty slice
+/// reports `NotApplicable`.
+#[must_use]
+pub fn combine_rule_results(
+    results: &[(&'static str, Result<ReactionOutcome, ReactError>)],
+) -> ReactionReport {
+    let mut posted_ids: Vec<String> = Vec::new();
+    let mut settled_ids: Vec<String> = Vec::new();
+    let mut errors: Vec<(String, String)> = Vec::new();
+
+    for (fallback_id, outcome) in results {
+        match outcome {
+            Ok(ReactionOutcome::Posted { receipt }) => {
+                posted_ids.push(agent_id_of(receipt, fallback_id));
+            }
+            Ok(ReactionOutcome::AlreadySettled) => {
+                settled_ids.push((*fallback_id).to_owned());
+            }
+            Ok(ReactionOutcome::NotApplicable) => {}
+            Err(e) => {
+                errors.push(((*fallback_id).to_owned(), format!("{e}")));
+            }
+        }
+    }
+
+    if !posted_ids.is_empty() {
+        return ReactionReport::Posted {
+            agent_ids: posted_ids,
+            errors,
+        };
+    }
+    if !settled_ids.is_empty() {
+        return ReactionReport::AlreadySettled {
+            agent_ids: settled_ids,
+            errors,
+        };
+    }
+    if !errors.is_empty() {
+        let aggregated = errors
+            .into_iter()
+            .map(|(id, msg)| format!("{id}: {msg}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return ReactionReport::Failed { error: aggregated };
+    }
+    ReactionReport::NotApplicable
+}
+
+fn agent_id_of(receipt: &ReactionReceipt, fallback: &str) -> String {
+    match &receipt.attribution.agent {
+        ExecutingAgent::Agent { id } => id.as_str().to_owned(),
+        ExecutingAgent::NoAgent => fallback.to_owned(),
+    }
 }
 
 #[cfg(test)]

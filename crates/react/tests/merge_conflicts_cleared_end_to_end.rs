@@ -90,9 +90,13 @@ fn reactor_from(client: Arc<FakeClient>) -> Reactor {
             .await
             {
                 Ok(ReactionOutcome::NotApplicable) => ReactionReport::NotApplicable,
-                Ok(ReactionOutcome::AlreadyPosted) => ReactionReport::AlreadyPosted,
+                Ok(ReactionOutcome::AlreadySettled) => ReactionReport::AlreadySettled {
+                    agent_ids: vec![MERGE_RULE_AGENT_ID.to_owned()],
+                    errors: Vec::new(),
+                },
                 Ok(ReactionOutcome::Posted { .. }) => ReactionReport::Posted {
-                    agent_id: MERGE_RULE_AGENT_ID.to_owned(),
+                    agent_ids: vec![MERGE_RULE_AGENT_ID.to_owned()],
+                    errors: Vec::new(),
                 },
                 Err(e) => ReactionReport::Failed {
                     error: format!("{e}"),
@@ -236,7 +240,7 @@ async fn marker_present_from_a_prior_run_blocks_a_second_post_after_restart() {
 
     assert!(matches!(
         ticks[1].reaction,
-        Some(ReactionReport::AlreadyPosted),
+        Some(ReactionReport::AlreadySettled { .. }),
     ));
     assert!(
         client.posts().is_empty(),

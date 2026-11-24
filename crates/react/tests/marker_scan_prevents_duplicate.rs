@@ -29,7 +29,7 @@ async fn an_existing_marker_comment_prevents_a_second_post() {
         .await
         .expect("react");
 
-    assert_eq!(outcome, ReactionOutcome::AlreadyPosted);
+    assert_eq!(outcome, ReactionOutcome::AlreadySettled);
     assert!(
         client.posts().is_empty(),
         "no new post, got: {:?}",
@@ -53,7 +53,7 @@ async fn a_second_react_call_in_the_same_process_does_not_double_post() {
         .await
         .expect("second react");
 
-    assert_eq!(outcome, ReactionOutcome::AlreadyPosted);
+    assert_eq!(outcome, ReactionOutcome::AlreadySettled);
     assert_eq!(
         client.posts().len(),
         1,

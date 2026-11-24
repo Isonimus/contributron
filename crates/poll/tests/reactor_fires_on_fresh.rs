@@ -42,7 +42,8 @@ async fn the_reactor_receives_the_prior_from_the_previous_fresh_tick() {
         Box::pin(async move {
             let decision = if prior.is_some() {
                 ReactionReport::Posted {
-                    agent_id: "rule:threads-cleared".into(),
+                    agent_ids: vec!["rule:threads-cleared".into()],
+                    errors: Vec::new(),
                 }
             } else {
                 ReactionReport::NotApplicable

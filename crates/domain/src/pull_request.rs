@@ -86,6 +86,59 @@ pub enum PullRequestAuthor {
     DeletedAccount,
 }
 
+/// A label the reactor applies to or removes from a pull request (slice 0016).
+///
+/// A newtype rather than a bare string so the three provider-client methods
+/// (`list_labels`, `add_label`, `remove_label`) cannot swap arguments with another string
+/// and so an empty or whitespace-padded label is caught at the boundary rather than sent to
+/// the provider. Mirrors the `AuthorLogin` / `ThreadId` pattern: validate at the
+/// constructor, carry a value that is known-good from then on.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Label(String);
+
+impl Label {
+    /// Wraps a label value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidLabel`] for an empty value, or for one whose leading or trailing
+    /// characters are whitespace: a label with those shapes is a normalization failure, not
+    /// a legitimate GitHub label.
+    pub fn new(value: impl Into<String>) -> Result<Self, InvalidLabel> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(InvalidLabel::Empty);
+        }
+        if value.trim() != value {
+            return Err(InvalidLabel::Padded);
+        }
+        Ok(Self(value))
+    }
+
+    /// The label as a string.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for Label {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// A label value outside the domain of valid labels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum InvalidLabel {
+    /// The value was empty.
+    #[error("label must not be empty")]
+    Empty,
+    /// The value had leading or trailing whitespace.
+    #[error("label must not have leading or trailing whitespace")]
+    Padded,
+}
+
 /// A review thread's provider-assigned identifier.
 ///
 /// Opaque by design: the system compares and orders these but never parses one, so a
@@ -243,5 +296,36 @@ impl ObservedPullRequest {
             .iter()
             .filter(|t| t.resolution == ThreadResolution::Unresolved)
             .count()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod label_tests {
+    use super::{InvalidLabel, Label};
+
+    #[test]
+    fn a_plain_label_round_trips() {
+        let l = Label::new("needs-rebase").expect("plain label");
+        assert_eq!(l.as_str(), "needs-rebase");
+        assert_eq!(format!("{l}"), "needs-rebase");
+    }
+
+    #[test]
+    fn an_empty_label_is_refused() {
+        assert_eq!(Label::new(""), Err(InvalidLabel::Empty));
+    }
+
+    #[test]
+    fn a_whitespace_padded_label_is_refused() {
+        assert_eq!(Label::new(" needs-rebase"), Err(InvalidLabel::Padded));
+        assert_eq!(Label::new("needs-rebase "), Err(InvalidLabel::Padded));
+        assert_eq!(Label::new("\tneeds-rebase"), Err(InvalidLabel::Padded));
+    }
+
+    #[test]
+    fn a_label_with_inner_whitespace_is_accepted() {
+        let l = Label::new("help wanted").expect("inner whitespace is fine");
+        assert_eq!(l.as_str(), "help wanted");
     }
 }
