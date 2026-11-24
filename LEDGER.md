@@ -76,6 +76,24 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
   second-signal escalation here. Fix: replace the one-shot `ctrl_c` await with a loop
   (first signal flips cancel; second signal `std::process::exit(130)`) and wire a per-
   fetch timeout at the `Fetch` boundary (ADR-0012).
+- [feature] Persist a reaction record in the store with the three-identity tuple
+  (`owner_user`, `worker`, `agent_id="rule:threads-cleared"`) alongside the pull-request
+  locator and the posted comment id. Slice 0014 carries the tuple through `TickOutcome` but
+  the store has no reaction surface, so invariant 6 is honoured in-process and not in
+  persistence. A third rule is likely to shape the schema; until then this is the gap
+  (ADR-0005).
+- [feature] Anonymous capture client for public-repo read paths. The current
+  `crates/github/src/capture.rs` client requires a token at construction, so `watch`
+  against a public repository without `CONTRIBUTRON_TOKEN` or `--token-path` cannot run
+  end-to-end even though slice 0014 scenario 5 asserts the read path keeps working. The
+  CLI half (`list`, token resolution) does keep working; the network half does not. Add an
+  anonymous `octocrab` constructor and plumb it through (ADR-0013).
+- [feature] Paginate PR issue comments in `GitHubClient::list_comments`. The marker scan
+  reads the first 100 comments only (`COMMENT_PAGE_SIZE` in `crates/github/src/client.rs`),
+  matching capture's single-page review-thread pull. A pull request with more than 100
+  comments whose marker sits past page 1 will be re-posted on restart, breaking the
+  idempotency guarantee of slice 0014 scenario 4 for that corner. Paginate until the marker
+  is found or the stream ends (ADR-0001).
 - [feature] Paginate `reviewThreads`. A capture reads the first 100 threads
   (`THREAD_PAGE_SIZE` in `crates/github/src/capture.rs`), and a pull request with more cannot
   be observed at all: the normalizer refuses a payload whose `pageInfo.hasNextPage` is true

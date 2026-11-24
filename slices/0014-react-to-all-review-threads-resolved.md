@@ -167,3 +167,62 @@ Unit and integration tests:
 ## As built
 
 To be filled in at merge.
+
+Frozen 2026-11-24 on branch `feat/m2-first-write` (commits 517c3b1..2fcdaca).
+
+- Shipped `crates/react/` with `react()`, `ReactionOutcome`, `ReactError`, `ProviderClient`,
+  `ProviderError`, `ExistingComment`, `ClientFuture`, and the constants `RULE_MARKER`
+  (`<!-- contributron-rule:threads-cleared -->`) and `RULE_AGENT_ID` (`rule:threads-cleared`).
+  The reactor checks the transition first, then scans existing comments for the marker, then
+  posts. Scenarios 1 through 4 each ship their named test
+  (`transition_fires_once.rs`, `steady_state_does_nothing.rs`,
+  `first_observation_does_nothing.rs`, `marker_scan_prevents_duplicate.rs`) and pass.
+- Threaded a `Reactor = Arc<dyn Fn(...) -> ReactorFuture + Send + Sync>` hook through the
+  poll loop as `run_loop_with_reactor`, called from `watch` after each observation write.
+  Each tick carries a `reaction: Option<ReactionReport>` with `NotApplicable`, `AlreadyPosted`,
+  `Posted { agent_id }` or `Failed { error }`; `report_tick` prints one line per real outcome.
+- Shipped `crates/github/src/client.rs` carrying `GitHubClient` over `octocrab::Octocrab`,
+  which implements `ProviderClient` with `list_comments` (single page, up to 100 comments)
+  and `post_comment` (via `.issues(owner, repo).create_comment(number, body)`). The dep arrow
+  is `github → react` (no cycle: react depends on poll, not on github).
+- CLI wiring in `crates/cli/src/main.rs` builds a `GitHubClient` when a token resolves, and
+  a `MissingTokenClient` otherwise. The missing-token client errors on every call with an
+  ADR-0013 message naming `--token-path`, `CONTRIBUTRON_TOKEN` and the git-credential
+  fallback. Because `react()` checks the transition first, non-qualifying ticks never touch
+  the client and never surface the credential error.
+- Scenario 5 (write-path half) shipped as `crates/react/tests/missing_token_fails_loud.rs`,
+  with a `NoCredentialClient` that records calls: a qualifying transition returns
+  `ReactError::Provider(ProviderError::Client(_))` with a message containing both "token"
+  (or `CONTRIBUTRON_TOKEN`) and "ADR-0013", and the recorded calls list is exactly
+  `["list_comments"]` — the marker scan is the first and only call, no partial post leaked.
+  A second test covers the non-qualifying-tick case: no transition, no client touch,
+  `NotApplicable`.
+- Scenario 5 (read-path half) shipped as `crates/cli/tests/read_path_without_token.rs`:
+  `token::resolve_optional` with no `--token-path` and no `CONTRIBUTRON_TOKEN` env var does
+  not error (either `None` or the ADR-0013 git-credential fallback is a pass), and
+  `EventStore::open` → `list` → `render_state` renders a stored observation without
+  touching any credential source. Deviation: the anonymous-GraphQL path against a public
+  repository is not yet exercised end-to-end because the capture client has no anonymous
+  constructor; ledgered.
+- Scenario 6 shipped as `scripts/lint-secrets.mjs`, wired as `npm run lint:secrets` and
+  into the composite `npm run lint`, and promoted standing invariant 10 from
+  `pending (LEDGER)` to `verified_by:` in the same commit (f30410c). The script walks
+  tracked files for GitHub token-shaped literals and PEM openers.
+- ADR-0013 R-U1 token resolution unified in `crates/cli/src/token.rs` (bf3b86c): CLI flag
+  precedes env var precedes the git-credential fallback, with the resolved string held in
+  a `SecretString` wrapper that redacts `Debug` and `Display`.
+- Deviations from the design that are now ledger items, each cited below:
+  - The three-identity tuple for a reaction is carried in the `TickOutcome` surface but
+    **is not persisted to the store** at this slice. The design text claimed it would be;
+    it did not, because the store has no reaction surface yet. Invariant 6 is honoured at
+    the in-process surface — every `Posted { agent_id }` names all three identities — but
+    not yet in persistence. Ledgered.
+  - Comment pagination is deferred: `list_comments` reads the first 100 comments, matching
+    the review-thread single-page pull in the capture client. A pull request with more than
+    100 comments can still be marker-scanned correctly only if the marker is within the
+    first page. Ledgered.
+  - Anonymous GraphQL for public-repo read paths (`watch` end-to-end without a token) is
+    deferred for the same reason as the read-path test's deviation above. Ledgered.
+- Checks at merge: `cargo test --workspace` passes, `cargo clippy --workspace --all-targets
+  -- -D warnings` clean, `npm run lint` clean (lint-docs 14 docs ok, lint-secrets ok,
+  build-index --check ok, check-immutable ok), `npm run index` clean.

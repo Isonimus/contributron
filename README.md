@@ -38,14 +38,18 @@ decisions.
 
 ## Status
 
-**It can see, remember and watch.** The three slices of milestone M1 have landed: a
-recorded GitHub payload becomes a normalized observation of a pull request and its review
-threads (slice 0007); that observation persists in a local SQLite store keyed by its
-content identity, so re-observing the same state is a no-op the database enforces rather
-than a check the caller remembered to perform (slice 0009, ADR-0010); and a polling loop
-watches a list of pull requests on a per-target cadence with jitter and exponential
-backoff, writing each observation to the same store (slice 0011, ADR-0012). Still
-read-only. No rule fires, and no agent exists yet.
+**It sees, remembers, watches, and now writes one comment deterministically.** The three
+slices of milestone M1 landed first: a recorded GitHub payload becomes a normalized
+observation of a pull request and its review threads (slice 0007); that observation
+persists in a local SQLite store keyed by its content identity, so re-observing the same
+state is a no-op the database enforces rather than a check the caller remembered to
+perform (slice 0009, ADR-0010); and a polling loop watches a list of pull requests on a
+per-target cadence with jitter and exponential backoff, writing each observation to the
+same store (slice 0011, ADR-0012). On top of that, M2's first deterministic rule: when a
+pull request's unresolved review-thread count transitions from non-zero to zero, the
+reactor posts one comment carrying the stable marker `<!-- contributron-rule:threads-cleared -->`,
+idempotent across restarts by scanning existing comments (slice 0014, ADR-0013). No agent
+exists yet.
 
 Governance came first, and that ordering was deliberate. The design this project starts from
 is a multi-year platform, and the decisions that narrow it to something reachable are more
@@ -57,10 +61,12 @@ $ contributron render --capture crates/github/tests/fixtures/pull_request_with_t
   unresolved threads: 1
 ```
 
-Recording a pull request from the live API needs a read token, taken from
-`CONTRIBUTRON_GITHUB_TOKEN` or from `git credential`. Nothing is stored: how credentials are
-really acquired is an open decision, due before anything writes, and it is a line in
-[`LEDGER.md`](LEDGER.md).
+Recording a pull request from the live API needs a token. Pass `--token-path <file>` or set
+`CONTRIBUTRON_TOKEN`; a `github.com` entry in `git credential` is accepted as a fallback
+for operator convenience (ADR-0013). `--token <value>` is deliberately not accepted
+because shells log argv. The read path (`list`, and `watch` against public repositories once
+anonymous capture lands) works without a token; the write path fails loud with a message
+naming the missing credential.
 
 ```console
 $ contributron capture --repo owner/name --pull-request 1 --out capture.json
@@ -88,7 +94,12 @@ fresh owner/name#1
 fresh owner/name#42
 unchanged owner/name#1
 unchanged owner/name#42
+reaction-posted owner/name#1 rule:threads-cleared
 ```
+
+With `CONTRIBUTRON_TOKEN` set or `--token-path <file>`, watching also runs the deterministic
+reactor: a pull request whose unresolved review threads drop from non-zero to zero earns
+one comment with the marker above, and only one across restarts (slice 0014).
 
 | What | Where |
 |---|---|
