@@ -4,8 +4,8 @@
 //! but the live capture be asserted offline against recorded fixtures.
 
 use contributron_domain::pull_request::{
-    AuthorLogin, ObservedPullRequest, PullRequestAuthor, PullRequestNumber, ReviewThread, ThreadId,
-    ThreadResolution,
+    AuthorLogin, Mergeable, ObservedPullRequest, PullRequestAuthor, PullRequestNumber,
+    ReviewThread, ThreadId, ThreadResolution,
 };
 
 use crate::payload::{CaptureEnvelope, PullRequestPayload};
@@ -100,10 +100,17 @@ pub fn normalize_pull_request(
 
     let author = normalize_author(payload)?;
 
+    // GitHub's `mergeable` field is nullable: the server returns null while it is still
+    // computing. A null is normalized to [`Mergeable::Unknown`] rather than refused, because
+    // "not computed yet" is an ordinary state the transition detector must see as neither
+    // clean nor conflicting. An unknown enum variant from the API would already have failed
+    // deserialization of the `Option<Mergeable>`, so this step is infallible.
+    let mergeable = payload.mergeable.unwrap_or(Mergeable::Unknown);
+
     let threads = normalize_threads(payload)?;
 
     Ok(ObservedPullRequest::new(
-        number, title, draft, author, threads,
+        number, title, draft, author, mergeable, threads,
     ))
 }
 

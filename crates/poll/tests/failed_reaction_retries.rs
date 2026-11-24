@@ -41,10 +41,9 @@ async fn a_failed_reaction_is_retried_on_the_next_unchanged_tick() {
         let calls = Arc::clone(&calls_for_reactor);
         let seen = Arc::clone(&seen_for_reactor);
         Box::pin(async move {
-            seen.lock().expect("seen").push((
-                prior.as_ref().map(|p| p.title.clone()),
-                new.title.clone(),
-            ));
+            seen.lock()
+                .expect("seen")
+                .push((prior.as_ref().map(|p| p.title.clone()), new.title.clone()));
             let mut c = calls.lock().expect("calls");
             *c = c.saturating_add(1);
             if *c == 1 {
@@ -98,10 +97,7 @@ async fn a_failed_reaction_is_retried_on_the_next_unchanged_tick() {
         ticks[0].outcome,
     );
     assert!(
-        matches!(
-            ticks[0].reaction,
-            Some(ReactionReport::Failed { .. }),
-        ),
+        matches!(ticks[0].reaction, Some(ReactionReport::Failed { .. }),),
         "first reaction should be Failed, got {:?}",
         ticks[0].reaction,
     );
@@ -112,10 +108,7 @@ async fn a_failed_reaction_is_retried_on_the_next_unchanged_tick() {
         ticks[1].outcome,
     );
     assert!(
-        matches!(
-            ticks[1].reaction,
-            Some(ReactionReport::Posted { .. }),
-        ),
+        matches!(ticks[1].reaction, Some(ReactionReport::Posted { .. }),),
         "second reaction should retry and Post, got {:?}",
         ticks[1].reaction,
     );

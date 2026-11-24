@@ -15,17 +15,14 @@ async fn steady_state_zero_does_not_post() {
     let worker = WorkerId::new("poll");
     let loc = locator();
 
-    let outcome = react(
-        &owner,
-        &worker,
-        &loc,
-        Some(&pr(0, 1)),
-        &pr(0, 1),
-        &client,
-    )
-    .await
-    .expect("react");
+    let outcome = react(&owner, &worker, &loc, Some(&pr(0, 1)), &pr(0, 1), &client)
+        .await
+        .expect("react");
 
     assert_eq!(outcome, ReactionOutcome::NotApplicable);
-    assert!(client.posts().is_empty(), "no post, got: {:?}", client.posts());
+    assert!(
+        client.posts().is_empty(),
+        "no post, got: {:?}",
+        client.posts()
+    );
 }

@@ -6,8 +6,8 @@
 use contributron_domain::actor::{AgentId, Attribution, ExecutingAgent, UserId, WorkerId};
 use contributron_domain::event::PullRequestObservation;
 use contributron_domain::pull_request::{
-    AuthorLogin, ObservedPullRequest, PullRequestAuthor, PullRequestNumber, ReviewThread, ThreadId,
-    ThreadResolution,
+    AuthorLogin, Mergeable, ObservedPullRequest, PullRequestAuthor, PullRequestNumber,
+    ReviewThread, ThreadId, ThreadResolution,
 };
 
 /// Written down before this test was first run, and derived independently of the
@@ -17,6 +17,7 @@ use contributron_domain::pull_request::{
 /// ```text
 /// {"number":7,"title":"slice 0007","draft":false,
 ///  "author":{"kind":"account","login":"Isonimus"},
+///  "mergeable":"UNKNOWN",
 ///  "threads":[{"id":"T1","resolution":"unresolved"}]}
 /// ```
 ///
@@ -24,7 +25,10 @@ use contributron_domain::pull_request::{
 /// to itself would pass for any value including a per-process random one. This constant is
 /// what makes the cross-process claim testable inside one process: a hasher seeded per
 /// process could not reproduce it.
-const EXPECTED_IDENTITY: &str = "3eeda9dc2f98569dbae4ded59f547f4ca63ef8d4a9dd54a865520bf34487aefa";
+///
+/// Updated in slice 0015 when `ObservedPullRequest` gained the `mergeable` field; the prior
+/// value is preserved in git history to prove the hash really did move with the shape.
+const EXPECTED_IDENTITY: &str = "5f2f36cbb50c57ca23aecdff7914b79bf60b2dd3d2b941ed0e896e8a309c4d8a";
 
 fn author() -> PullRequestAuthor {
     PullRequestAuthor::Account {
@@ -45,6 +49,7 @@ fn subject(threads: Vec<ReviewThread>) -> ObservedPullRequest {
         "slice 0007",
         false,
         author(),
+        Mergeable::Unknown,
         threads,
     )
 }
@@ -135,6 +140,7 @@ fn a_change_in_any_observed_field_changes_the_identity() {
             "slice 0008",
             false,
             author(),
+            Mergeable::Unknown,
             vec![thread("T1", ThreadResolution::Unresolved)],
         ),
         ExecutingAgent::NoAgent,
@@ -147,6 +153,7 @@ fn a_change_in_any_observed_field_changes_the_identity() {
             "slice 0007",
             true,
             author(),
+            Mergeable::Unknown,
             vec![thread("T1", ThreadResolution::Unresolved)],
         ),
         ExecutingAgent::NoAgent,
@@ -161,4 +168,21 @@ fn a_change_in_any_observed_field_changes_the_identity() {
         ExecutingAgent::NoAgent,
     ));
     assert_ne!(baseline, extra_thread, "a new thread is a change");
+
+    // Slice 0015: the mergeable field is observed content and must move the identity.
+    let mergeable_flipped = identity_of(&observation(
+        ObservedPullRequest::new(
+            PullRequestNumber::new(7).expect("seven is a valid pull request number"),
+            "slice 0007",
+            false,
+            author(),
+            Mergeable::Mergeable,
+            vec![thread("T1", ThreadResolution::Unresolved)],
+        ),
+        ExecutingAgent::NoAgent,
+    ));
+    assert_ne!(
+        baseline, mergeable_flipped,
+        "mergeable is observed content; a change in it is a change in the identity",
+    );
 }

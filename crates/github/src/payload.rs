@@ -7,6 +7,7 @@
 //! one line later in `normalize` is what lets the error name it. Nothing reads one of these
 //! options without validating it.
 
+use contributron_domain::pull_request::Mergeable;
 use serde::Deserialize;
 
 /// A captured GraphQL response for one pull request.
@@ -43,6 +44,9 @@ pub struct PullRequestPayload {
     pub is_draft: Option<bool>,
     /// `author`, which GitHub reports as null for a deleted account.
     pub author: Option<AuthorPayload>,
+    /// `mergeable`. GitHub's schema declares this nullable (null while mergeability is
+    /// being computed); [`crate::normalize`] maps that to [`Mergeable::Unknown`].
+    pub mergeable: Option<Mergeable>,
     /// `reviewThreads`.
     pub review_threads: Option<ReviewThreadsPayload>,
 }

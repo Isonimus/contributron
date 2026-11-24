@@ -29,8 +29,7 @@ struct NoCredentialClient {
     calls: Mutex<Vec<&'static str>>,
 }
 
-const MISSING_CREDENTIAL: &str =
-    "no GitHub token available for the write path. Pass --token-path, set CONTRIBUTRON_TOKEN, \
+const MISSING_CREDENTIAL: &str = "no GitHub token available for the write path. Pass --token-path, set CONTRIBUTRON_TOKEN, \
      or store a github.com credential (ADR-0013).";
 
 impl ProviderClient for NoCredentialClient {
@@ -48,6 +47,17 @@ impl ProviderClient for NoCredentialClient {
         _body: &'a str,
     ) -> ClientFuture<'a, ()> {
         self.calls.lock().expect("calls").push("post_comment");
+        Box::pin(async { Err(ProviderError::Client(MISSING_CREDENTIAL.to_owned())) })
+    }
+
+    fn live_merge_has_conflict<'a>(
+        &'a self,
+        _locator: &'a PullRequestLocator,
+    ) -> ClientFuture<'a, bool> {
+        self.calls
+            .lock()
+            .expect("calls")
+            .push("live_merge_has_conflict");
         Box::pin(async { Err(ProviderError::Client(MISSING_CREDENTIAL.to_owned())) })
     }
 }
@@ -76,6 +86,7 @@ async fn a_qualifying_transition_without_a_credential_fails_loud_and_posts_nothi
                 "error did not cite ADR-0013: {msg}",
             );
         }
+        ReactError::History(_) => panic!("rule 1 does not call history, got {error:?}"),
     }
 
     let calls = client.calls.lock().expect("calls").clone();

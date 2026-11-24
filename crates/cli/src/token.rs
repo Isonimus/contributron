@@ -178,8 +178,8 @@ mod tests {
 
     #[test]
     fn a_missing_token_file_is_refused_naming_the_path() {
-        let err = read_token_file(std::path::Path::new("/nope/nope/nope.txt"))
-            .expect_err("missing");
+        let err =
+            read_token_file(std::path::Path::new("/nope/nope/nope.txt")).expect_err("missing");
         assert!(err.to_string().contains("nope.txt"), "was: {err}");
     }
 

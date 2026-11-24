@@ -51,10 +51,9 @@ async fn the_first_fresh_tick_sees_the_store_prior() {
     let reactor: Reactor = Arc::new(move |_locator, prior, new| {
         let seen = Arc::clone(&seen_for_reactor);
         Box::pin(async move {
-            seen.lock().expect("seen").push((
-                prior.as_ref().map(|p| p.title.clone()),
-                new.title.clone(),
-            ));
+            seen.lock()
+                .expect("seen")
+                .push((prior.as_ref().map(|p| p.title.clone()), new.title.clone()));
             ReactionReport::NotApplicable
         })
     });

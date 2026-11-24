@@ -133,6 +133,36 @@ pub enum ThreadResolution {
     Unresolved,
 }
 
+/// A pull request's mergeability, as the provider last computed it.
+///
+/// Three states and no fourth. GitHub reports `MERGEABLE`, `CONFLICTING`, and `UNKNOWN` (the
+/// last meaning the server is still computing). The reactor crate reads this as evidence of
+/// a transition; the write path re-fetches the provider's authoritative state before acting
+/// on it (standing invariant 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum Mergeable {
+    /// The provider says the pull request can be merged without conflict.
+    Mergeable,
+    /// The provider says the pull request has a conflict.
+    Conflicting,
+    /// The provider has not finished computing mergeability. Treated as neither a clean nor a
+    /// conflicting observation: no transition detector should fire on `Unknown`.
+    Unknown,
+}
+
+impl Mergeable {
+    /// The value used when a deserialized payload has no `mergeable` field at all. Only
+    /// ever applies to payloads written before slice 0015 extended the shape; the store's
+    /// `PRAGMA user_version = 2` refuses such databases at open time, but the default
+    /// keeps a hand-constructed test fixture or an in-flight upgrade from crashing the
+    /// decoder instead of erroring at the boundary that cares.
+    #[must_use]
+    fn default_for_missing_field() -> Self {
+        Self::Unknown
+    }
+}
+
 /// One review thread on a pull request.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ReviewThread {
@@ -165,6 +195,15 @@ pub struct ObservedPullRequest {
     pub draft: bool,
     /// The account that opened it, or a statement that it no longer exists.
     pub author: PullRequestAuthor,
+    /// The provider's last-computed mergeability. Evidence for a transition detector, not
+    /// authority for a write; standing invariant 4 requires the write path to re-fetch.
+    ///
+    /// `#[serde(default)]` keeps a row written by an older build from failing to decode,
+    /// defaulting to [`Mergeable::Unknown`]; the store's `PRAGMA user_version` bump is the
+    /// actual breaking-change signal, so an operator with a slice-0014 database is refused
+    /// at `EventStore::open` rather than silently round-tripping stale identities.
+    #[serde(default = "Mergeable::default_for_missing_field")]
+    pub mergeable: Mergeable,
     /// Its review threads, ordered by identifier.
     threads: Vec<ReviewThread>,
 }
@@ -177,6 +216,7 @@ impl ObservedPullRequest {
         title: impl Into<String>,
         draft: bool,
         author: PullRequestAuthor,
+        mergeable: Mergeable,
         mut threads: Vec<ReviewThread>,
     ) -> Self {
         threads.sort();
@@ -185,6 +225,7 @@ impl ObservedPullRequest {
             title: title.into(),
             draft,
             author,
+            mergeable,
             threads,
         }
     }

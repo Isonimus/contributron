@@ -12,7 +12,7 @@
 use contributron_cli::render_state;
 use contributron_domain::actor::UserId;
 use contributron_domain::pull_request::{
-    AuthorLogin, ObservedPullRequest, PullRequestAuthor, PullRequestNumber,
+    AuthorLogin, Mergeable, ObservedPullRequest, PullRequestAuthor, PullRequestNumber,
 };
 use contributron_poll::{
     Fetch, FetchFuture, PollConfig, PullRequestLocator, Tick, TickOutcome, run_loop,
@@ -41,6 +41,7 @@ async fn watch_then_list_renders_the_stubbed_observation() {
         PullRequestAuthor::Account {
             login: AuthorLogin::new("alice").expect("nonempty login"),
         },
+        Mergeable::Unknown,
         Vec::new(),
     );
 

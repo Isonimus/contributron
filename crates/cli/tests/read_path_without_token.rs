@@ -16,7 +16,7 @@ use contributron_cli::token::{Source, resolve_optional};
 use contributron_domain::actor::{Attribution, UserId, WorkerId};
 use contributron_domain::event::PullRequestObservation;
 use contributron_domain::pull_request::{
-    AuthorLogin, ObservedPullRequest, PullRequestAuthor, PullRequestNumber,
+    AuthorLogin, Mergeable, ObservedPullRequest, PullRequestAuthor, PullRequestNumber,
 };
 use contributron_store::EventStore;
 use tempfile::TempDir;
@@ -54,6 +54,7 @@ fn list_renders_the_store_without_touching_any_credential_source() {
         PullRequestAuthor::Account {
             login: AuthorLogin::new("alice").expect("nonempty login"),
         },
+        Mergeable::Unknown,
         Vec::new(),
     );
     let attribution = Attribution::local_operator(owner.clone(), WorkerId::new("cli"));

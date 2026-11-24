@@ -299,35 +299,9 @@ async fn run_one(mut state: TaskState) -> Result<(), PollError> {
     // below races the sleep against an *actual* change, not against noise.
     state.cancel.mark_unchanged();
 
-    // A store-open failure is final for this target (SchemaVersionMismatch, file-permission
-    // errors, a missing directory): the task cannot write anything, so it reports the error
-    // once on the channel and returns `Ok`. `run_loop` still finishes cleanly for the other
-    // targets. Finding 1 of the 2026-11-24 review: a prior version returned `Err` here,
-    // which held the error until SIGINT drained every sibling task, which is the silent-
-    // partial-outage class.
-    let store = match EventStore::open(&state.store_path, state.owner.clone()) {
-        Ok(s) => s,
-        Err(e) => {
-            let tick = Tick {
-                locator: state.locator.clone(),
-                outcome: TickOutcome::StoreFailed {
-                    error: e.to_string(),
-                    backoff: None,
-                },
-                reaction: None,
-            };
-            // If the channel is already closed, nothing to do; the whole loop is done.
-            drop(state.events.send(tick));
-            return Ok(());
-        }
+    let Some((store, mut prior)) = open_store_and_seed_prior(&state) else {
+        return Ok(());
     };
-
-    // Seed `prior` from the store so a transition whose two halves span a restart is still
-    // seen. A store failure here is non-fatal: the task falls back to in-memory-only prior
-    // and reports the error on the first tick, which keeps a transient open-time glitch from
-    // disabling the loop. See `run_loop_with_reactor`'s doc for the design.
-    let mut prior: Option<ObservedPullRequest> =
-        store.latest_for_number(state.locator.number).unwrap_or_default();
     // A fresh observation whose reactor call returned `Failed`, parked here so the next tick
     // can retry the reactor against the same unchanged prior. Cleared on reactor success, on
     // any subsequent Fresh (the world moved on; the parked observation is stale), and on any
@@ -371,7 +345,11 @@ async fn run_one(mut state: TaskState) -> Result<(), PollError> {
                 )
                 .await;
                 consecutive_failures = 0;
-                (TickOutcome::Fresh, reaction, success_delay(&state, &mut jitter_pending))
+                (
+                    TickOutcome::Fresh,
+                    reaction,
+                    success_delay(&state, &mut jitter_pending),
+                )
             }
             StepAfterWrite::Unchanged => {
                 let reaction = handle_unchanged_reaction(
@@ -382,13 +360,20 @@ async fn run_one(mut state: TaskState) -> Result<(), PollError> {
                 )
                 .await;
                 consecutive_failures = 0;
-                (TickOutcome::Unchanged, reaction, success_delay(&state, &mut jitter_pending))
+                (
+                    TickOutcome::Unchanged,
+                    reaction,
+                    success_delay(&state, &mut jitter_pending),
+                )
             }
             StepAfterWrite::StoreFailed(msg) => {
                 consecutive_failures = consecutive_failures.saturating_add(1);
                 let backoff = backoff_delay(state.interval, consecutive_failures);
                 (
-                    TickOutcome::StoreFailed { error: msg, backoff: Some(backoff) },
+                    TickOutcome::StoreFailed {
+                        error: msg,
+                        backoff: Some(backoff),
+                    },
                     None,
                     backoff,
                 )
@@ -420,6 +405,56 @@ async fn run_one(mut state: TaskState) -> Result<(), PollError> {
 /// Handle the reactor call for a Fresh tick: discard any stale parked retry (the world
 /// moved on), invoke the reactor if one is attached, and settle `prior`/`pending_retry`
 /// through [`advance_or_park`]. Returns the `ReactionReport` when a reactor ran.
+/// Opens the task's store and seeds `prior` from the last observation of this PR.
+///
+/// A store-open failure is final for this target (`SchemaVersionMismatch`, file-permission
+/// errors, a missing directory): the task reports the error once on the channel and the
+/// caller returns `Ok`. `run_loop` still finishes cleanly for the other targets.
+/// Finding 1 of the 2026-11-24 review: a prior version returned `Err` here, which held
+/// the error until SIGINT drained every sibling task (the silent-partial-outage class).
+///
+/// A failure seeding the prior is reported on the channel but non-fatal: the task
+/// continues with `None` prior. Finding 3 of the 2026-11-25 review: a bare
+/// `.unwrap_or_default()` here swallowed a Decode error silently, breaking the fail-loud
+/// contract; emitting a `StoreFailed` tick surfaces the gap at its first occurrence.
+fn open_store_and_seed_prior(
+    state: &TaskState,
+) -> Option<(EventStore, Option<ObservedPullRequest>)> {
+    let store = match EventStore::open(&state.store_path, state.owner.clone()) {
+        Ok(s) => s,
+        Err(e) => {
+            let tick = Tick {
+                locator: state.locator.clone(),
+                outcome: TickOutcome::StoreFailed {
+                    error: e.to_string(),
+                    backoff: None,
+                },
+                reaction: None,
+            };
+            drop(state.events.send(tick));
+            return None;
+        }
+    };
+
+    let prior = match store.latest_for_number(state.locator.number) {
+        Ok(found) => found,
+        Err(e) => {
+            let tick = Tick {
+                locator: state.locator.clone(),
+                outcome: TickOutcome::StoreFailed {
+                    error: format!("seeding reactor prior: {e}"),
+                    backoff: None,
+                },
+                reaction: None,
+            };
+            drop(state.events.send(tick));
+            None
+        }
+    };
+
+    Some((store, prior))
+}
+
 async fn handle_fresh_reaction(
     locator: &PullRequestLocator,
     reactor: Option<&Reactor>,

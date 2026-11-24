@@ -102,7 +102,7 @@ const SQLITE_CONSTRAINT_PRIMARYKEY: i32 = 1555;
 /// corrupt. Opening a file whose version does not match is an error, not a silent attempt
 /// at best-effort reading: ADR-0008 already notes that an encoding change invalidates every
 /// stored identity, so the correct response is to refuse and let the operator decide.
-const SCHEMA_USER_VERSION: i32 = 1;
+const SCHEMA_USER_VERSION: i32 = 2;
 
 impl EventStore {
     /// Opens a store at `path`, creating the schema if it does not exist, scoped to `owner`.
@@ -131,6 +131,9 @@ impl EventStore {
             })?;
 
         if on_disk_version == 0 {
+            // Fresh file: create at the current version. The PRAGMA is kept inside the
+            // same execute_batch so a crash between the DDL and the version write cannot
+            // leave a table whose shape is ahead of its advertised version.
             connection.execute_batch(
                 "CREATE TABLE IF NOT EXISTS events (
                     event_id    TEXT NOT NULL,
@@ -141,7 +144,7 @@ impl EventStore {
                     payload     TEXT NOT NULL,
                     PRIMARY KEY (owner_user, event_id)
                 );
-                PRAGMA user_version = 1;",
+                PRAGMA user_version = 2;",
             )?;
         } else if on_disk_version != SCHEMA_USER_VERSION {
             return Err(StoreError::SchemaVersionMismatch {
@@ -264,6 +267,43 @@ impl EventStore {
                  FROM events
                  WHERE owner_user = ?1
                    AND json_extract(payload, '$.number') = ?2
+                 ORDER BY observed_at DESC
+                 LIMIT 1",
+                params![self.owner.as_str(), number_i64],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match row {
+            Some(payload) => Ok(Some(serde_json::from_str(&payload)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// The most recent observation of a pull request number whose mergeable field is one
+    /// of the settled values (`MERGEABLE` or `CONFLICTING`), skipping `UNKNOWN` rows.
+    ///
+    /// Slice 0015's merge-conflicts-cleared rule uses this to look past the immediate
+    /// in-memory prior: GitHub returns `mergeable: null` (→ Unknown) for seconds-to-
+    /// minutes after a push, and a single Unknown tick erases the preceding Conflicting
+    /// evidence from the loop's `prior` cache (finding 1 of the 2026-11-25 review). The
+    /// store still carries the earlier settled row, and this query returns it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] on a SQLite error or a row the current code cannot decode.
+    pub fn latest_settled_mergeable_for_number(
+        &self,
+        number: u64,
+    ) -> Result<Option<ObservedPullRequest>, StoreError> {
+        let number_i64 = i64::try_from(number).unwrap_or(i64::MAX);
+        let row: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT payload
+                 FROM events
+                 WHERE owner_user = ?1
+                   AND json_extract(payload, '$.number') = ?2
+                   AND json_extract(payload, '$.mergeable') IN ('MERGEABLE', 'CONFLICTING')
                  ORDER BY observed_at DESC
                  LIMIT 1",
                 params![self.owner.as_str(), number_i64],

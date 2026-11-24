@@ -7,8 +7,8 @@ use contributron_cli::render_state;
 use contributron_domain::actor::{Attribution, UserId, WorkerId};
 use contributron_domain::event::PullRequestObservation;
 use contributron_domain::pull_request::{
-    AuthorLogin, ObservedPullRequest, PullRequestAuthor, PullRequestNumber, ReviewThread, ThreadId,
-    ThreadResolution,
+    AuthorLogin, Mergeable, ObservedPullRequest, PullRequestAuthor, PullRequestNumber,
+    ReviewThread, ThreadId, ThreadResolution,
 };
 use std::path::PathBuf;
 use std::process::Command;
@@ -36,6 +36,7 @@ fn one_open_pull_request() -> PullRequestObservation {
         PullRequestAuthor::Account {
             login: AuthorLogin::new("Isonimus").expect("a non-empty login"),
         },
+        Mergeable::Unknown,
         vec![
             ReviewThread {
                 id: ThreadId::new("PRRT_kwDOKt3bHM5TqX1a").expect("a non-empty identifier"),
@@ -116,6 +117,7 @@ fn a_title_cannot_forge_a_line_or_reach_the_terminal() {
             PullRequestAuthor::Account {
                 login: AuthorLogin::new("attacker").expect("a non-empty login"),
             },
+            Mergeable::Unknown,
             vec![ReviewThread {
                 id: ThreadId::new("T1").expect("a non-empty identifier"),
                 resolution: ThreadResolution::Unresolved,
@@ -143,6 +145,7 @@ fn a_title_cannot_forge_a_line_or_reach_the_terminal() {
             PullRequestAuthor::Account {
                 login: AuthorLogin::new("attacker").expect("a non-empty login"),
             },
+            Mergeable::Unknown,
             vec![],
         ),
     );

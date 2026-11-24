@@ -36,6 +36,7 @@ query($owner: String!, $name: String!, $number: Int!, $threads: Int!) {
       title
       isDraft
       author { login }
+      mergeable
       reviewThreads(first: $threads) {
         pageInfo { hasNextPage }
         nodes { id isResolved }

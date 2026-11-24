@@ -50,7 +50,9 @@ impl GitHubClient {
     ///
     /// Returns [`ClientBuildError`] if `octocrab` cannot assemble the HTTP client.
     pub fn new(token: String) -> Result<Self, ClientBuildError> {
-        let inner = octocrab::Octocrab::builder().personal_token(token).build()?;
+        let inner = octocrab::Octocrab::builder()
+            .personal_token(token)
+            .build()?;
         Ok(Self { inner })
     }
 }
@@ -91,6 +93,54 @@ impl ProviderClient for GitHubClient {
                 .await
                 .map_err(|e| ProviderError::Client(format!("posting a comment: {e}")))?;
             Ok(())
+        })
+    }
+
+    /// Slice 0015's invariant-4 live read. Hits `GET /repos/{o}/{r}/pulls/{n}` and reads
+    /// the REST `mergeable` boolean together with the `mergeable_state` enum.
+    ///
+    /// The scope of this rule is "conflicts cleared", not "the PR is ready to merge": the
+    /// non-dirty settled states — `clean` / `unstable` / `has_hooks` / `blocked` /
+    /// `behind` — all have the merge computed and free of conflicts, so they return
+    /// `Ok(false)` (no conflict). `dirty` is the only state that still has a conflict
+    /// and returns `Ok(true)`. The transient non-answers — `mergeable == None` (null
+    /// while the server computes), `mergeable_state == Unknown` or `Draft` — do NOT
+    /// silently decide:
+    /// they are routed to [`ProviderError::Client`] so the reactor's park-and-retry path
+    /// drives another attempt once the provider settles (finding 2 of the 2026-11-25
+    /// review).
+    fn live_merge_has_conflict<'a>(
+        &'a self,
+        locator: &'a PullRequestLocator,
+    ) -> ClientFuture<'a, bool> {
+        Box::pin(async move {
+            use octocrab::models::pulls::MergeableState;
+            let pr = self
+                .inner
+                .pulls(&locator.owner, &locator.repo)
+                .get(locator.number)
+                .await
+                .map_err(|e| ProviderError::Client(format!("fetching pull request: {e}")))?;
+            match (pr.mergeable, &pr.mergeable_state) {
+                (_, Some(MergeableState::Dirty)) => Ok(true),
+                (
+                    _,
+                    Some(
+                        MergeableState::Clean
+                        | MergeableState::Unstable
+                        | MergeableState::HasHooks
+                        | MergeableState::Blocked
+                        | MergeableState::Behind,
+                    ),
+                ) => Ok(false),
+                // Unknown / Draft / unmapped variants, or mergeable:null: the provider has
+                // not settled on an answer. Treating that as "no conflict" would risk a
+                // post on a still-dirty PR; treating it as "conflict present" would block
+                // the rule forever. Err signals "retry".
+                _ => Err(ProviderError::Client(
+                    "GitHub's mergeability is still computing".to_owned(),
+                )),
+            }
         })
     }
 }

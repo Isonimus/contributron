@@ -103,6 +103,20 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
   comments whose marker sits past page 1 will be re-posted on restart, breaking the
   idempotency guarantee of slice 0014 scenario 4 for that corner. Paginate until the marker
   is found or the stream ends (ADR-0001).
+- [feature] Fail loud when the GraphQL `pullRequest.mergeable` field is absent from the
+  payload (not when it is present and null; null is legitimate "computing" state). The
+  normalizer currently maps missing → [`Mergeable::Unknown`] via serde's `Option<Mergeable>`,
+  which would silently kill the slice-0015 rule if a future query edit removed the
+  `mergeable` selection. Fix: use a double-Option (`Option<Option<Mergeable>>`) or a custom
+  deserializer that distinguishes "field absent" from "field null", and route the former to
+  a field-named `NormalizeError::MissingField`. Found by the 2026-11-25 adversarial review
+  of slice 0015 (finding 6) (ADR-0001).
+- [feature] Extend `ReactionReport::Posted` (or the tick-report surface) so a tick in
+  which *both* deterministic rules posted records both `agent_id`s rather than dropping
+  one. Today `combine_rules` picks one via `pick_outcome`. The overlap is improbable —
+  the two rules fire on orthogonal observed fields — but when it happens, invariant 6 is
+  satisfied for one write and not the other. Found by the 2026-11-25 adversarial review
+  of slice 0015 (finding 4 residual) (ADR-0005).
 - [feature] Paginate `reviewThreads`. A capture reads the first 100 threads
   (`THREAD_PAGE_SIZE` in `crates/github/src/capture.rs`), and a pull request with more cannot
   be observed at all: the normalizer refuses a payload whose `pageInfo.hasNextPage` is true

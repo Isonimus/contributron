@@ -8,10 +8,10 @@
 mod common;
 
 use common::{locator, observation, scripted_fetch, user};
+use contributron_domain::pull_request::ObservedPullRequest;
 use contributron_poll::{
     PollConfig, ReactionReport, Reactor, Tick, TickOutcome, run_loop_with_reactor,
 };
-use contributron_domain::pull_request::ObservedPullRequest;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tempfile::TempDir;
@@ -30,11 +30,7 @@ async fn the_reactor_receives_the_prior_from_the_previous_fresh_tick() {
     let obs_a = observation(7, "title a");
     let obs_b = observation(7, "title b");
     let obs_c = observation(7, "title c");
-    let script = vec![
-        Ok(obs_a.clone()),
-        Ok(obs_b.clone()),
-        Ok(obs_c.clone()),
-    ];
+    let script = vec![Ok(obs_a.clone()), Ok(obs_b.clone()), Ok(obs_c.clone())];
     let fetch = scripted_fetch(script);
 
     // The reactor records every (prior, new) pair it saw. Its decision is deterministic:

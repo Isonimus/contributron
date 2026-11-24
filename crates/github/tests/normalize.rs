@@ -7,7 +7,9 @@
 // `expect` here and nowhere else.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use contributron_domain::pull_request::{AuthorLogin, PullRequestAuthor, ThreadResolution};
+use contributron_domain::pull_request::{
+    AuthorLogin, Mergeable, PullRequestAuthor, ThreadResolution,
+};
 use contributron_github::{NormalizeError, normalize_capture};
 
 fn fixture(name: &str) -> String {
@@ -37,6 +39,7 @@ fn a_pull_request_with_two_threads_normalizes_with_one_unresolved() {
             login: AuthorLogin::new("Isonimus").expect("a non-empty login")
         }
     );
+    assert_eq!(observed.mergeable, Mergeable::Mergeable);
 
     assert_eq!(observed.threads().len(), 2);
     assert_eq!(observed.unresolved_thread_count(), 1);

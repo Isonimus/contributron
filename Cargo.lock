@@ -353,6 +353,8 @@ version = "0.0.0"
 dependencies = [
  "contributron-domain",
  "contributron-poll",
+ "contributron-store",
+ "tempfile",
  "thiserror",
  "tokio",
 ]

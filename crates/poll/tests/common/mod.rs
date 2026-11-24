@@ -4,7 +4,7 @@
 
 use contributron_domain::actor::UserId;
 use contributron_domain::pull_request::{
-    AuthorLogin, ObservedPullRequest, PullRequestAuthor, PullRequestNumber,
+    AuthorLogin, Mergeable, ObservedPullRequest, PullRequestAuthor, PullRequestNumber,
 };
 use contributron_poll::{Fetch, FetchError, FetchFuture, PullRequestLocator};
 use std::sync::Arc;
@@ -23,6 +23,14 @@ pub(crate) fn locator(owner: &str, repo: &str, number: u64) -> PullRequestLocato
 }
 
 pub(crate) fn observation(number: u64, title: &str) -> ObservedPullRequest {
+    observation_with_mergeable(number, title, Mergeable::Unknown)
+}
+
+pub(crate) fn observation_with_mergeable(
+    number: u64,
+    title: &str,
+    mergeable: Mergeable,
+) -> ObservedPullRequest {
     ObservedPullRequest::new(
         PullRequestNumber::new(number).expect("a nonzero pr number"),
         title,
@@ -30,6 +38,7 @@ pub(crate) fn observation(number: u64, title: &str) -> ObservedPullRequest {
         PullRequestAuthor::Account {
             login: AuthorLogin::new("alice").expect("a nonempty login"),
         },
+        mergeable,
         Vec::new(),
     )
 }

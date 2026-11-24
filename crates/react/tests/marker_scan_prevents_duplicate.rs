@@ -54,5 +54,10 @@ async fn a_second_react_call_in_the_same_process_does_not_double_post() {
         .expect("second react");
 
     assert_eq!(outcome, ReactionOutcome::AlreadyPosted);
-    assert_eq!(client.posts().len(), 1, "still one post, got: {:?}", client.posts());
+    assert_eq!(
+        client.posts().len(),
+        1,
+        "still one post, got: {:?}",
+        client.posts()
+    );
 }
