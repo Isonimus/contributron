@@ -94,6 +94,11 @@ pub struct Tick {
     pub locator: PullRequestLocator,
     /// What happened.
     pub outcome: TickOutcome,
+    /// What the reactor decided this tick, when one was attached (slice 0014). `None` when
+    /// no reactor was wired (every `run_loop` tick, and every `run_loop_with_reactor` tick
+    /// whose outcome did not reach the reactor: a fetch or store failure, or an unchanged
+    /// observation, since there is no new state for the reactor to compare against).
+    pub reaction: Option<ReactionReport>,
 }
 
 /// The four outcomes of one tick.
@@ -125,6 +130,49 @@ pub enum TickOutcome {
         /// How long until the next attempt for this target, or `None` if the task is
         /// exiting because the store could not be opened at all.
         backoff: Option<Duration>,
+    },
+}
+
+/// The future a [`Reactor`] returns.
+pub type ReactorFuture = Pin<Box<dyn Future<Output = ReactionReport> + Send>>;
+
+/// Called after a fresh observation is written to the store (slice 0014). The reactor is
+/// handed the prior observation held in memory by the task (or `None` for the first fresh
+/// tick in this process's lifetime), the newly-written observation, and the locator. What
+/// it does on the other side is the reactor crate's concern; this crate only forwards the
+/// decision into the tick stream.
+///
+/// `Arc<dyn Fn ...>` rather than a trait because the shape mirrors [`Fetch`] and the quality
+/// bar's rule of three says one real implementation does not earn a trait.
+pub type Reactor = Arc<
+    dyn Fn(PullRequestLocator, Option<ObservedPullRequest>, ObservedPullRequest) -> ReactorFuture
+        + Send
+        + Sync,
+>;
+
+/// What the reactor decided for one tick.
+///
+/// Kept as plain strings and variants rather than the reactor crate's own `ReactionOutcome`
+/// so the dependency direction stays `react -> poll` only — this crate does not know the
+/// shape of a provider attribution, only that a reactor returned a decision.
+#[derive(Debug, Clone)]
+pub enum ReactionReport {
+    /// The prior/new pair did not qualify; nothing was done.
+    NotApplicable,
+    /// A prior post for this rule was already visible on the target; nothing was posted.
+    AlreadyPosted,
+    /// A comment was posted. `agent_id` names which rule ran (invariant 6).
+    Posted {
+        /// The rule's `agent_id`, as the reactor reported it.
+        agent_id: String,
+    },
+    /// The reactor failed. The error is surfaced on the tick stream and the loop continues;
+    /// per slice 0014 the write-path failure does not halt the read-path (the next tick's
+    /// fetch and store write still run).
+    Failed {
+        /// The reactor's error, stringified. The reactor is responsible for not leaking a
+        /// credential into this string.
+        error: String,
     },
 }
 
@@ -164,12 +212,38 @@ pub async fn run_loop(
     events: mpsc::UnboundedSender<Tick>,
     cancel: watch::Receiver<bool>,
 ) -> Result<(), PollError> {
+    run_loop_with_reactor(config, fetch, None, store_path, events, cancel).await
+}
+
+/// Same as [`run_loop`] but with a reactor attached (slice 0014). After each fresh store
+/// write the task consults `reactor` with the in-memory prior observation and the new one;
+/// the resulting [`ReactionReport`] is attached to the tick. Passing `None` is equivalent
+/// to [`run_loop`].
+///
+/// Why in-memory prior rather than a fresh store read: the slice's correctness story for
+/// restart survival is the reactor's own idempotency marker scan, not a store lookup. A
+/// `latest_for_pr` query would also need an `(owner, repo, number)` index the store does
+/// not keep (payloads carry `number` only), which would force a schema migration this slice
+/// does not need. The marker scan is what makes the reactor safe across restarts.
+///
+/// # Errors
+///
+/// See [`run_loop`].
+pub async fn run_loop_with_reactor(
+    config: PollConfig,
+    fetch: Fetch,
+    reactor: Option<Reactor>,
+    store_path: &Path,
+    events: mpsc::UnboundedSender<Tick>,
+    cancel: watch::Receiver<bool>,
+) -> Result<(), PollError> {
     let mut set = tokio::task::JoinSet::new();
     for target in &config.targets {
         let jitter = jitter_for(target, config.interval);
         let state = TaskState {
             locator: target.clone(),
             fetch: Arc::clone(&fetch),
+            reactor: reactor.as_ref().map(Arc::clone),
             interval: config.interval,
             jitter,
             owner: config.owner.clone(),
@@ -209,6 +283,7 @@ pub async fn run_loop(
 struct TaskState {
     locator: PullRequestLocator,
     fetch: Fetch,
+    reactor: Option<Reactor>,
     interval: Duration,
     jitter: Duration,
     owner: UserId,
@@ -238,6 +313,7 @@ async fn run_one(mut state: TaskState) -> Result<(), PollError> {
                     error: e.to_string(),
                     backoff: None,
                 },
+                reaction: None,
             };
             // If the channel is already closed, nothing to do; the whole loop is done.
             drop(state.events.send(tick));
@@ -245,6 +321,7 @@ async fn run_one(mut state: TaskState) -> Result<(), PollError> {
         }
     };
 
+    let mut prior: Option<ObservedPullRequest> = None;
     let mut consecutive_failures: u32 = 0;
     // First poll fires immediately rather than after a full jitter: an operator typing
     // `watch` expects to see activity, not sixty seconds of silence. The jitter is applied
@@ -271,57 +348,55 @@ async fn run_one(mut state: TaskState) -> Result<(), PollError> {
         // Once the fetch starts, cancel no longer interrupts it: the Definition of Done's
         // shutdown scenario requires a poll in flight to run to completion.
         let fetch_result = (state.fetch)(state.locator.clone()).await;
-        let (outcome, delay) = match fetch_result {
-            Ok(observation) => {
-                let attribution = Attribution {
-                    user: state.owner.clone(),
-                    worker: WorkerId::new(POLL_WORKER),
-                    agent: ExecutingAgent::NoAgent,
+        let step = apply_fetch_to_store(fetch_result, &store, &state.owner);
+        let (outcome, reaction, delay) = match step {
+            StepAfterWrite::Fresh(observed) => {
+                let reaction = match state.reactor.as_ref() {
+                    Some(r) => Some(
+                        (r)(state.locator.clone(), prior.clone(), observed.clone()).await,
+                    ),
+                    None => None,
                 };
-                let observation = PullRequestObservation::new(attribution, observation);
-                match store.write(&observation) {
-                    Ok(write) => {
-                        consecutive_failures = 0;
-                        let outcome = match write {
-                            WriteOutcome::Fresh => TickOutcome::Fresh,
-                            WriteOutcome::Duplicate => TickOutcome::Unchanged,
-                        };
-                        // Interval cadence with a one-time jitter applied between the
-                        // first and second ticks. Using `sleep(Duration)` not
-                        // `sleep_until(Instant)` avoids the `Instant` overflow that a very
-                        // large interval would otherwise turn into a "no delay at all" hot
-                        // loop (finding 2 of the review).
-                        let delay = if jitter_pending {
-                            jitter_pending = false;
-                            state.interval.saturating_add(state.jitter)
-                        } else {
-                            state.interval
-                        };
-                        (outcome, delay)
-                    }
-                    Err(e) => {
-                        consecutive_failures = consecutive_failures.saturating_add(1);
-                        let backoff = backoff_delay(state.interval, consecutive_failures);
-                        (
-                            TickOutcome::StoreFailed {
-                                error: e.to_string(),
-                                backoff: Some(backoff),
-                            },
-                            backoff,
-                        )
-                    }
-                }
+                prior = Some(observed);
+                consecutive_failures = 0;
+                let delay = if jitter_pending {
+                    jitter_pending = false;
+                    state.interval.saturating_add(state.jitter)
+                } else {
+                    state.interval
+                };
+                (TickOutcome::Fresh, reaction, delay)
             }
-            Err(error) => {
+            StepAfterWrite::Unchanged => {
+                consecutive_failures = 0;
+                let delay = if jitter_pending {
+                    jitter_pending = false;
+                    state.interval.saturating_add(state.jitter)
+                } else {
+                    state.interval
+                };
+                (TickOutcome::Unchanged, None, delay)
+            }
+            StepAfterWrite::StoreFailed(msg) => {
                 consecutive_failures = consecutive_failures.saturating_add(1);
                 let backoff = backoff_delay(state.interval, consecutive_failures);
-                (TickOutcome::FetchFailed { error, backoff }, backoff)
+                (
+                    TickOutcome::StoreFailed { error: msg, backoff: Some(backoff) },
+                    None,
+                    backoff,
+                )
+            }
+            StepAfterWrite::FetchFailed(error) => {
+                consecutive_failures = consecutive_failures.saturating_add(1);
+                let backoff = backoff_delay(state.interval, consecutive_failures);
+                (TickOutcome::FetchFailed { error, backoff }, None, backoff)
             }
         };
 
         let tick = Tick {
             locator: state.locator.clone(),
             outcome,
+            reaction,
         };
         // A send failure means the receiver was dropped: the caller has moved on, so there
         // is no one to report further ticks to. Exit cleanly.
@@ -333,6 +408,41 @@ async fn run_one(mut state: TaskState) -> Result<(), PollError> {
     }
 
     Ok(())
+}
+
+/// What the fetch-plus-store step produced, before the reactor is consulted.
+///
+/// Split from `run_one` so the store reference does not live across the reactor's await
+/// point (the store's internal statement cache is `!Sync`, which would otherwise make the
+/// task future non-`Send`). The reactor call happens up in `run_one` with an owned prior.
+enum StepAfterWrite {
+    Fresh(ObservedPullRequest),
+    Unchanged,
+    StoreFailed(String),
+    FetchFailed(FetchError),
+}
+
+fn apply_fetch_to_store(
+    fetch_result: Result<ObservedPullRequest, FetchError>,
+    store: &EventStore,
+    owner: &UserId,
+) -> StepAfterWrite {
+    match fetch_result {
+        Ok(observed) => {
+            let attribution = Attribution {
+                user: owner.clone(),
+                worker: WorkerId::new(POLL_WORKER),
+                agent: ExecutingAgent::NoAgent,
+            };
+            let observation = PullRequestObservation::new(attribution, observed.clone());
+            match store.write(&observation) {
+                Ok(WriteOutcome::Fresh) => StepAfterWrite::Fresh(observed),
+                Ok(WriteOutcome::Duplicate) => StepAfterWrite::Unchanged,
+                Err(e) => StepAfterWrite::StoreFailed(e.to_string()),
+            }
+        }
+        Err(error) => StepAfterWrite::FetchFailed(error),
+    }
 }
 
 fn backoff_delay(interval: Duration, consecutive_failures: u32) -> Duration {
