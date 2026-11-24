@@ -230,6 +230,52 @@ impl EventStore {
         maybe.map(decode_from_strings).transpose()
     }
 
+    /// The most recent observation for the given pull-request number, by wall-clock write
+    /// time, or `None` if no row exists for that number in this owner's scope.
+    ///
+    /// The polling loop uses this at task startup to seed its in-memory `prior` from the
+    /// store, so a reactor can detect a transition whose two halves were observed in
+    /// different process lifetimes (slice 0014 scenario 1, review finding from
+    /// 2026-11-24). Filtering is on `json_extract(payload, '$.number')` because
+    /// [`ObservedPullRequest`] carries the number in its JSON payload (serde's default for a
+    /// newtype tuple struct is the bare inner value). There is no index on the extracted
+    /// field: a watch tracks a handful of pull requests per operator and this runs once per
+    /// target at startup, so a scan is fine. The multi-repository-same-number corner
+    /// (`foo/bar#7` and `baz/qux#7` in the same store) returns whichever row was written
+    /// last regardless of repository; ledgered, since `ObservedPullRequest` does not yet
+    /// carry owner/repo.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] on a SQLite error or a stored row the current code cannot
+    /// decode.
+    pub fn latest_for_number(
+        &self,
+        number: u64,
+    ) -> Result<Option<ObservedPullRequest>, StoreError> {
+        // SQLite integers are i64; a `PullRequestNumber` is non-zero but has no upper bound,
+        // so a value past `i64::MAX` saturates to `i64::MAX` and matches nothing, which
+        // yields `None` without crashing the query path.
+        let number_i64 = i64::try_from(number).unwrap_or(i64::MAX);
+        let row: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT payload
+                 FROM events
+                 WHERE owner_user = ?1
+                   AND json_extract(payload, '$.number') = ?2
+                 ORDER BY observed_at DESC
+                 LIMIT 1",
+                params![self.owner.as_str(), number_i64],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match row {
+            Some(payload) => Ok(Some(serde_json::from_str(&payload)?)),
+            None => Ok(None),
+        }
+    }
+
     /// All observations in this store, ordered by event identity.
     ///
     /// The order is deterministic, so a render over the result is the same bytes on every

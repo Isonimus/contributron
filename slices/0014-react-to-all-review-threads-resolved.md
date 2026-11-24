@@ -226,3 +226,42 @@ Frozen 2026-11-24 on branch `feat/m2-first-write` (commits 517c3b1..2fcdaca).
 - Checks at merge: `cargo test --workspace` passes, `cargo clippy --workspace --all-targets
   -- -D warnings` clean, `npm run lint` clean (lint-docs 14 docs ok, lint-secrets ok,
   build-index --check ok, check-immutable ok), `npm run index` clean.
+
+## Amendment — 2026-11-24: two correctness gaps from the adversarial review
+
+The 2026-11-24 adversarial review of this slice found two reachable gaps in the shipped
+behaviour that the Definition of Done did not foresee. Both are fixed on the same branch,
+before merge, with fail-before-pass-after regression tests. Appending here rather than
+editing above preserves the pre-review record of what had shipped.
+
+- **A failed reactor call used to drop the transition.** The poll loop advanced its
+  in-memory `prior` to the new observation regardless of what the reactor returned, so a
+  `ReactionReport::Failed` (a rate limit, a 5xx, or the missing-token client path)
+  silenced the retry: the next identical fetch dedup'd as `Unchanged` and the reactor was
+  never called again. Fixed by parking the failed observation in a per-task
+  `pending_retry` slot, by advancing `prior` only on a successful reactor decision
+  (`NotApplicable`, `AlreadyPosted`, `Posted`), and by re-invoking the reactor on the next
+  `Unchanged` tick with the same unchanged prior and the parked observation. A subsequent
+  `Fresh` tick discards the park because the world has moved on. Covered by
+  `crates/poll/tests/failed_reaction_retries.rs`.
+- **The in-memory prior missed transitions across a restart.** When the process started
+  the task reset `prior` to `None`, so a transition whose "before" was written in a prior
+  session and whose "after" arrived in this session went uninspected. Fixed by seeding
+  `prior` at task startup from a new `EventStore::latest_for_number(number)` query that
+  returns the most recent stored observation for that PR number in owner scope. A store
+  error here is non-fatal and falls back to `None` rather than preventing the task from
+  running. Covered by `crates/poll/tests/prior_survives_restart.rs` and
+  `crates/store/tests/latest_for_number.rs`.
+
+The reviewer also noted three smaller issues that are ledgered as follow-ups rather than
+fixed here, because none of them breaks a shipped Definition-of-Done scenario and each is
+scoped for a focused later slice: the marker scan is "at most once per PR, ever" by design
+(a thread reopened then cleared again is not announced a second time, and any commenter
+pasting the marker string suppresses the rule); comment pagination is still single-page;
+and the three-identity tuple for each reaction is still not persisted to the store. The
+ledger carries each of these separately.
+
+The `scripts/lint-secrets.mjs` token-shape table was broadened in the same commit to also
+match `gho_`, `ghu_`, `ghs_` and `ghr_` prefixes (GitHub OAuth, user-to-server,
+server-to-server and refresh tokens) so a committed credential of those shapes is caught
+as well, not just the classic `ghp_` and the fine-grained `github_pat_` prefixes.

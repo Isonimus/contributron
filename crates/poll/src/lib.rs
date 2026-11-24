@@ -216,15 +216,16 @@ pub async fn run_loop(
 }
 
 /// Same as [`run_loop`] but with a reactor attached (slice 0014). After each fresh store
-/// write the task consults `reactor` with the in-memory prior observation and the new one;
-/// the resulting [`ReactionReport`] is attached to the tick. Passing `None` is equivalent
-/// to [`run_loop`].
+/// write the task consults `reactor` with the prior observation and the new one; the
+/// resulting [`ReactionReport`] is attached to the tick. Passing `None` is equivalent to
+/// [`run_loop`].
 ///
-/// Why in-memory prior rather than a fresh store read: the slice's correctness story for
-/// restart survival is the reactor's own idempotency marker scan, not a store lookup. A
-/// `latest_for_pr` query would also need an `(owner, repo, number)` index the store does
-/// not keep (payloads carry `number` only), which would force a schema migration this slice
-/// does not need. The marker scan is what makes the reactor safe across restarts.
+/// The prior is seeded at task startup from [`EventStore::latest_for_number`], so a
+/// transition whose two halves were observed in different process lifetimes is still seen.
+/// A failed reactor call parks the new observation as pending; the next tick's reactor call
+/// uses the same unchanged prior and retries with the parked new, so a transient provider
+/// error no longer silently drops the transition (both findings from the 2026-11-24
+/// adversarial review).
 ///
 /// # Errors
 ///
@@ -321,7 +322,17 @@ async fn run_one(mut state: TaskState) -> Result<(), PollError> {
         }
     };
 
-    let mut prior: Option<ObservedPullRequest> = None;
+    // Seed `prior` from the store so a transition whose two halves span a restart is still
+    // seen. A store failure here is non-fatal: the task falls back to in-memory-only prior
+    // and reports the error on the first tick, which keeps a transient open-time glitch from
+    // disabling the loop. See `run_loop_with_reactor`'s doc for the design.
+    let mut prior: Option<ObservedPullRequest> =
+        store.latest_for_number(state.locator.number).unwrap_or_default();
+    // A fresh observation whose reactor call returned `Failed`, parked here so the next tick
+    // can retry the reactor against the same unchanged prior. Cleared on reactor success, on
+    // any subsequent Fresh (the world moved on; the parked observation is stale), and on any
+    // task exit. See finding 1 of the 2026-11-24 adversarial review.
+    let mut pending_retry: Option<ObservedPullRequest> = None;
     let mut consecutive_failures: u32 = 0;
     // First poll fires immediately rather than after a full jitter: an operator typing
     // `watch` expects to see activity, not sixty seconds of silence. The jitter is applied
@@ -351,31 +362,27 @@ async fn run_one(mut state: TaskState) -> Result<(), PollError> {
         let step = apply_fetch_to_store(fetch_result, &store, &state.owner);
         let (outcome, reaction, delay) = match step {
             StepAfterWrite::Fresh(observed) => {
-                let reaction = match state.reactor.as_ref() {
-                    Some(r) => Some(
-                        (r)(state.locator.clone(), prior.clone(), observed.clone()).await,
-                    ),
-                    None => None,
-                };
-                prior = Some(observed);
+                let reaction = handle_fresh_reaction(
+                    &state.locator,
+                    state.reactor.as_ref(),
+                    &mut prior,
+                    &mut pending_retry,
+                    observed,
+                )
+                .await;
                 consecutive_failures = 0;
-                let delay = if jitter_pending {
-                    jitter_pending = false;
-                    state.interval.saturating_add(state.jitter)
-                } else {
-                    state.interval
-                };
-                (TickOutcome::Fresh, reaction, delay)
+                (TickOutcome::Fresh, reaction, success_delay(&state, &mut jitter_pending))
             }
             StepAfterWrite::Unchanged => {
+                let reaction = handle_unchanged_reaction(
+                    &state.locator,
+                    state.reactor.as_ref(),
+                    &mut prior,
+                    &mut pending_retry,
+                )
+                .await;
                 consecutive_failures = 0;
-                let delay = if jitter_pending {
-                    jitter_pending = false;
-                    state.interval.saturating_add(state.jitter)
-                } else {
-                    state.interval
-                };
-                (TickOutcome::Unchanged, None, delay)
+                (TickOutcome::Unchanged, reaction, success_delay(&state, &mut jitter_pending))
             }
             StepAfterWrite::StoreFailed(msg) => {
                 consecutive_failures = consecutive_failures.saturating_add(1);
@@ -408,6 +415,80 @@ async fn run_one(mut state: TaskState) -> Result<(), PollError> {
     }
 
     Ok(())
+}
+
+/// Handle the reactor call for a Fresh tick: discard any stale parked retry (the world
+/// moved on), invoke the reactor if one is attached, and settle `prior`/`pending_retry`
+/// through [`advance_or_park`]. Returns the `ReactionReport` when a reactor ran.
+async fn handle_fresh_reaction(
+    locator: &PullRequestLocator,
+    reactor: Option<&Reactor>,
+    prior: &mut Option<ObservedPullRequest>,
+    pending_retry: &mut Option<ObservedPullRequest>,
+    observed: ObservedPullRequest,
+) -> Option<ReactionReport> {
+    *pending_retry = None;
+    if let Some(r) = reactor {
+        let decision = (r)(locator.clone(), prior.clone(), observed.clone()).await;
+        advance_or_park(prior, pending_retry, &decision, observed);
+        Some(decision)
+    } else {
+        *prior = Some(observed);
+        None
+    }
+}
+
+/// Handle the reactor call for an Unchanged tick: if a previous Fresh parked a retry,
+/// re-invoke the reactor against the still-unchanged prior and the parked observation.
+async fn handle_unchanged_reaction(
+    locator: &PullRequestLocator,
+    reactor: Option<&Reactor>,
+    prior: &mut Option<ObservedPullRequest>,
+    pending_retry: &mut Option<ObservedPullRequest>,
+) -> Option<ReactionReport> {
+    let parked = pending_retry.clone()?;
+    let r = reactor?;
+    let decision = (r)(locator.clone(), prior.clone(), parked.clone()).await;
+    advance_or_park(prior, pending_retry, &decision, parked);
+    Some(decision)
+}
+
+/// The delay to use after a successful tick: the base interval, plus the per-target jitter
+/// on the first successful tick only (ADR-0012).
+fn success_delay(state: &TaskState, jitter_pending: &mut bool) -> Duration {
+    if *jitter_pending {
+        *jitter_pending = false;
+        state.interval.saturating_add(state.jitter)
+    } else {
+        state.interval
+    }
+}
+
+/// Advance `prior` on reactor success, or park `observed` for retry on reactor failure.
+///
+/// A `NotApplicable`, `AlreadyPosted` or `Posted` decision means the reactor compared the
+/// prior against the new and reached a conclusion the next tick's comparison can build on;
+/// `prior` moves forward. A `Failed` decision means the comparison never completed, so
+/// `prior` stays where it was and the new observation parks as `pending_retry` for the next
+/// tick to retry (see the review's finding 1). Clearing `pending_retry` on success closes
+/// the retry loop.
+fn advance_or_park(
+    prior: &mut Option<ObservedPullRequest>,
+    pending_retry: &mut Option<ObservedPullRequest>,
+    decision: &ReactionReport,
+    observed: ObservedPullRequest,
+) {
+    match decision {
+        ReactionReport::Failed { .. } => {
+            *pending_retry = Some(observed);
+        }
+        ReactionReport::NotApplicable
+        | ReactionReport::AlreadyPosted
+        | ReactionReport::Posted { .. } => {
+            *prior = Some(observed);
+            *pending_retry = None;
+        }
+    }
 }
 
 /// What the fetch-plus-store step produced, before the reactor is consulted.

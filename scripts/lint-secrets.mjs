@@ -24,6 +24,10 @@ const root = resolve(process.argv[2] ?? process.cwd());
 const PATTERNS = [
   { name: 'github personal access token (classic)', re: /ghp_[A-Za-z0-9]{36,}/ },
   { name: 'github fine-grained token', re: /github_pat_[A-Za-z0-9_]{80,}/ },
+  { name: 'github oauth access token', re: /gho_[A-Za-z0-9]{36,}/ },
+  { name: 'github user access token', re: /ghu_[A-Za-z0-9]{36,}/ },
+  { name: 'github server-to-server token', re: /ghs_[A-Za-z0-9]{36,}/ },
+  { name: 'github refresh token', re: /ghr_[A-Za-z0-9]{36,}/ },
   { name: 'PEM private key header', re: /-----BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY-----/ },
 ];
 

@@ -76,6 +76,15 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
   second-signal escalation here. Fix: replace the one-shot `ctrl_c` await with a loop
   (first signal flips cancel; second signal `std::process::exit(130)`) and wire a per-
   fetch timeout at the `Fetch` boundary (ADR-0012).
+- [feature] Harden the `threads-cleared` rule's marker scan against two cases the slice
+  0014 shipping semantics accept as-is: a thread reopened and re-cleared is not announced
+  a second time, because the first marker comment is permanent (the rule is "at most once
+  per PR, ever"), and any commenter who pastes the marker string suppresses the bot,
+  because the scan does not filter by author. Fix: filter the scan to the authenticated
+  user's own comments, and either accept "at most once per PR, ever" as the rule's
+  definition or track a per-transition marker (slice 0014 Design notes marker-only
+  idempotency; this is the extension that follows). Found by the 2026-11-24 adversarial
+  review (ADR-0001).
 - [feature] Persist a reaction record in the store with the three-identity tuple
   (`owner_user`, `worker`, `agent_id="rule:threads-cleared"`) alongside the pull-request
   locator and the posted comment id. Slice 0014 carries the tuple through `TickOutcome` but
