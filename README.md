@@ -1,6 +1,10 @@
 # Contributron
 
 <p align="center">
+  <img src="docs/contributron-hero.jpeg" alt="Contributron" width="720">
+</p>
+
+<p align="center">
   <strong>Rules that watch your repositories and dispatch AI agents on event, without taking your authority away</strong>
 </p>
 
