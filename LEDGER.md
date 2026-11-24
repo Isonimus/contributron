@@ -54,13 +54,6 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
 - [audit] Confirm stele rule R11 (every scripts/*-verify.mjs wired into package.json)
   behaves correctly once package.json exists; the install predates it.
 
-- [feature] `scripts/lint-secrets.mjs` to check that no committed file holds a
-  token-shaped or key-shaped literal, and to check that no code path writes a secret into
-  a file inside the working tree. Wired into `package.json` and CI. This promotes
-  invariant 10 from `pending (LEDGER)` to `verified_by:` in the same change. Ships with
-  the first M2 slice that actually reads a token; before that there is nothing to lint
-  against beyond the committed-file half, and shipping half the check would advertise
-  coverage the row does not have (ADR-0013).
 - [feature] Sign agent-authored commits with an SSH signing key distinct from the
   operator's (`gpg.format = ssh`), so that "which identity produced this commit" is
   verifiable by the provider rather than asserted by our own audit record. Cheap, and it

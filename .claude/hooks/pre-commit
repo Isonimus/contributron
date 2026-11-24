@@ -57,7 +57,7 @@ fi
 # The commit's own checkers, not the working tree's (stele:ADR-0018) — grading a commit with a
 # linter it does not contain is the same defect one turn removed. No fallback to the
 # working copy: a silent fallback is the thing this hook exists to remove.
-for checker in lint-docs.mjs build-index.mjs check-immutable.mjs; do
+for checker in lint-docs.mjs build-index.mjs check-immutable.mjs lint-secrets.mjs; do
   if [ ! -f "$staged/scripts/$checker" ]; then
     echo "pre-commit: scripts/$checker is not in the commit — cannot check it against itself." >&2
     echo "            Stage the vendored checker, or run /init-method --update." >&2
@@ -72,7 +72,16 @@ node "$staged/scripts/lint-docs.mjs" "$staged"
 #    regenerate and stage it rather than letting it fall behind.
 node "$staged/scripts/build-index.mjs" --check "$staged"
 
-# 3. Immutable documents may only grow (stele:ADR-0019). Skipped on an unborn branch, where the
+# 3. No token-shaped literal in any tracked file, and no Rust code path writes a
+#    SecretString-derived buffer into a file inside the working tree (invariant 10,
+#    ADR-0013). This one runs against the working tree rather than the extracted staged
+#    tree because the secret scan has to see every tracked file, not only the paths the
+#    hook materializes for the doc checks — a secret committed under `crates/...` would
+#    otherwise go unseen. The CI backstop and the slice 0014 scenario both invoke the
+#    script the same way (`node scripts/lint-secrets.mjs .`).
+node "$staged/scripts/lint-secrets.mjs" "$root"
+
+# 4. Immutable documents may only grow (stele:ADR-0019). Skipped on an unborn branch, where the
 #    first commit has nothing to have edited.
 if git rev-parse --verify --quiet HEAD >/dev/null; then
   node "$staged/scripts/check-immutable.mjs" HEAD "$tree"
