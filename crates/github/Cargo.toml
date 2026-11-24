@@ -12,6 +12,8 @@ authors.workspace = true
 # the domain and never back (ADR-0001).
 [dependencies]
 contributron-domain = { workspace = true }
+contributron-poll = { workspace = true }
+contributron-react = { workspace = true }
 octocrab = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

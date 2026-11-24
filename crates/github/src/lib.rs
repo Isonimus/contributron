@@ -5,8 +5,10 @@
 //! because normalization consumes the former and returns the latter.
 
 pub mod capture;
+pub mod client;
 pub mod normalize;
 pub mod payload;
 
 pub use capture::{CaptureError, PullRequestLocator, capture_pull_request};
+pub use client::{ClientBuildError, GitHubClient};
 pub use normalize::{NormalizeError, normalize_capture, normalize_pull_request};

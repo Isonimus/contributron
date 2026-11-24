@@ -4,13 +4,16 @@ use anyhow::{Context as _, Result, anyhow};
 use clap::{Parser, Subcommand};
 use contributron_cli::{render_state, token};
 use contributron_cli::token::Source as TokenSource;
-use contributron_domain::actor::UserId;
+use contributron_domain::actor::{UserId, WorkerId};
 use contributron_github::{
-    PullRequestLocator as GhLocator, capture_pull_request, normalize_capture,
+    GitHubClient, PullRequestLocator as GhLocator, capture_pull_request, normalize_capture,
 };
 use contributron_poll::{
-    Fetch, FetchError, FetchFuture, PollConfig, PullRequestLocator, Tick, TickOutcome, poll_once,
-    run_loop,
+    Fetch, FetchError, FetchFuture, PollConfig, PullRequestLocator, ReactionReport, Reactor,
+    ReactorFuture, Tick, TickOutcome, poll_once, run_loop_with_reactor,
+};
+use contributron_react::{
+    ClientFuture, ExistingComment, ProviderClient, ProviderError, ReactionOutcome, react,
 };
 use contributron_store::EventStore;
 use std::path::{Path, PathBuf};
@@ -250,6 +253,8 @@ async fn watch_loop(
     // `watch` reads the token optionally and the fetch sends it when present.
     let source = TokenSource::from_flag(token_path);
     let token = token::resolve_optional(&source)?;
+    let owner = config.owner.clone();
+    let reactor = Some(build_reactor(token.clone(), owner)?);
     let fetch: Fetch = Arc::new(move |locator: PullRequestLocator| {
         let token = token.clone();
         Box::pin(async move {
@@ -299,7 +304,8 @@ async fn watch_loop(
         }
     });
 
-    let result = run_loop(config, fetch, store_path, events_tx, cancel_rx).await;
+    let result =
+        run_loop_with_reactor(config, fetch, reactor, store_path, events_tx, cancel_rx).await;
 
     // Both auxiliary tasks terminate on their own: the signal task on cancel send, the
     // reporter when the channel closes (which happens when `run_loop` drops the sender and
@@ -311,6 +317,91 @@ async fn watch_loop(
         .map_err(|e| anyhow!("reporter task joined with a panic: {e}"))?;
 
     result.map_err(|e| anyhow!("polling loop: {e}"))
+}
+
+/// Builds the reactor closure.
+///
+/// The read path (ADR-0013 consequence 3) is allowed to run without a credential against
+/// public repositories, so `token` is an [`Option`]. When it is `None`, the client is a
+/// [`MissingTokenClient`] that errors on every method: `react()`'s transition check runs
+/// first, so a non-qualifying tick still reports `NotApplicable` without touching the
+/// client, and only a qualifying transition surfaces the missing-credential error (slice
+/// 0014 scenario 5 — the write path aborts, the read path keeps working).
+fn build_reactor(
+    token: Option<contributron_cli::secret::SecretString>,
+    owner: UserId,
+) -> Result<Reactor> {
+    let client: Arc<dyn ProviderClient> = match token {
+        Some(token) => Arc::new(
+            GitHubClient::new(token.expose().to_owned())
+                .context("building the GitHub client for the reactor")?,
+        ),
+        None => Arc::new(MissingTokenClient),
+    };
+    let worker = WorkerId::new(CLI_WORKER);
+    let reactor: Reactor = Arc::new(move |locator, prior, new| {
+        let client = Arc::clone(&client);
+        let owner = owner.clone();
+        let worker = worker.clone();
+        Box::pin(async move {
+            match react(&owner, &worker, &locator, prior.as_ref(), &new, client.as_ref()).await {
+                Ok(ReactionOutcome::NotApplicable) => ReactionReport::NotApplicable,
+                Ok(ReactionOutcome::AlreadyPosted) => ReactionReport::AlreadyPosted,
+                Ok(ReactionOutcome::Posted { attribution, .. }) => {
+                    let agent_id = match &attribution.agent {
+                        contributron_domain::actor::ExecutingAgent::Agent { id } => {
+                            id.as_str().to_owned()
+                        }
+                        contributron_domain::actor::ExecutingAgent::NoAgent => {
+                            "no-agent".to_owned()
+                        }
+                    };
+                    ReactionReport::Posted { agent_id }
+                }
+                Err(e) => ReactionReport::Failed {
+                    error: format!("{e}"),
+                },
+            }
+        }) as ReactorFuture
+    });
+    Ok(reactor)
+}
+
+/// A [`ProviderClient`] that fails every call with a message naming the missing credential
+/// (ADR-0013). Installed on the reactor when `watch` is run without a token: the transition
+/// check inside `react()` runs before the client is touched, so non-qualifying ticks pass
+/// through unaffected, and a qualifying transition fails loud rather than silently
+/// no-oping.
+#[derive(Debug, Default)]
+struct MissingTokenClient;
+
+impl ProviderClient for MissingTokenClient {
+    fn list_comments<'a>(
+        &'a self,
+        _locator: &'a PullRequestLocator,
+    ) -> ClientFuture<'a, Vec<ExistingComment>> {
+        Box::pin(async {
+            Err(ProviderError::Client(
+                "no GitHub token available for the write path. Pass --token-path, set \
+                 CONTRIBUTRON_TOKEN, or store a github.com credential (ADR-0013)."
+                    .to_owned(),
+            ))
+        })
+    }
+
+    fn post_comment<'a>(
+        &'a self,
+        _locator: &'a PullRequestLocator,
+        _body: &'a str,
+    ) -> ClientFuture<'a, ()> {
+        Box::pin(async {
+            Err(ProviderError::Client(
+                "no GitHub token available for the write path. Pass --token-path, set \
+                 CONTRIBUTRON_TOKEN, or store a github.com credential (ADR-0013)."
+                    .to_owned(),
+            ))
+        })
+    }
 }
 
 fn report_tick(tick: &Tick) {
@@ -337,6 +428,22 @@ fn report_tick(tick: &Tick) {
                 tick.locator, error,
             ),
         },
+    }
+    report_reaction(tick);
+}
+
+fn report_reaction(tick: &Tick) {
+    match &tick.reaction {
+        None | Some(ReactionReport::NotApplicable) => {}
+        Some(ReactionReport::AlreadyPosted) => {
+            println!("reaction-skipped {} (marker already present)", tick.locator);
+        }
+        Some(ReactionReport::Posted { agent_id }) => {
+            println!("reaction-posted {} by {}", tick.locator, agent_id);
+        }
+        Some(ReactionReport::Failed { error }) => {
+            eprintln!("reaction-error {}: {}", tick.locator, error);
+        }
     }
 }
 

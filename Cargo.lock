@@ -306,6 +306,7 @@ dependencies = [
  "contributron-domain",
  "contributron-github",
  "contributron-poll",
+ "contributron-react",
  "contributron-store",
  "tempfile",
  "tokio",
@@ -326,6 +327,8 @@ name = "contributron-github"
 version = "0.0.0"
 dependencies = [
  "contributron-domain",
+ "contributron-poll",
+ "contributron-react",
  "octocrab",
  "serde",
  "serde_json",
