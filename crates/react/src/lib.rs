@@ -1,6 +1,6 @@
-//! Deterministic reactions to observed state transitions (slice 0014, slice 0015, slice 0016).
+//! Deterministic reactions to observed state transitions (slice 0014, slice 0015, slice 0016, slice 0017).
 //!
-//! Three rules ship today:
+//! Four rules ship today:
 //!
 //! - `react`: threads-cleared (slice 0014). Post one marker comment when the unresolved
 //!   review-thread count transitions from non-zero to zero.
@@ -11,13 +11,16 @@
 //!   when the stored mergeable state crosses the Mergeable/Conflicting boundary in either
 //!   direction, gated on the same live provider re-fetch. Label-level idempotency is
 //!   `list_labels` plus a set membership check, so no marker comment is needed.
+//! - `react_review_requested` (slice 0017). Request the operator-configured reviewers when
+//!   the pull request transitions from draft to ready-for-review. Idempotency is
+//!   `list_requested_reviewers` plus a subset check; no marker comment is needed.
 //!
 //! This crate holds the pure logic. The provider client is a trait, not a concrete octocrab
 //! client, so every rule is testable without a network and the GitHub-specific wiring
 //! stays in `crates/github/` (invariant 1).
 
 use contributron_domain::actor::{AgentId, Attribution, ExecutingAgent, UserId, WorkerId};
-use contributron_domain::pull_request::{Label, Mergeable, ObservedPullRequest};
+use contributron_domain::pull_request::{AuthorLogin, Label, Mergeable, ObservedPullRequest};
 use contributron_poll::{PullRequestLocator, ReactionReport};
 use std::future::Future;
 use std::pin::Pin;
@@ -52,6 +55,9 @@ pub const LABEL_RULE_AGENT_ID: &str = "rule:needs-rebase-label";
 /// A string constant here, wrapped into a validated [`Label`] on use. Configurability is
 /// deferred: three workflows before a DSL (ADR-0004).
 pub const NEEDS_REBASE_LABEL: &str = "needs-rebase";
+
+/// The `agent_id` written to the store for the review-requested rule (slice 0017).
+pub const REVIEW_REQUESTED_RULE_AGENT_ID: &str = "rule:review-requested";
 
 /// A comment this rule would post, or did post.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -183,6 +189,32 @@ pub trait ProviderClient: Send + Sync {
         locator: &'a PullRequestLocator,
         label: &'a Label,
     ) -> ClientFuture<'a, ()>;
+
+    /// List the reviewers currently requested on a pull request (slice 0017). Returns only
+    /// the user logins; team review requests are a separate axis the review-requested rule
+    /// does not consult.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] if the provider call fails, or if the provider returned a
+    /// reviewer value this crate cannot accept (see finding 3 of the 2026-11-25 review).
+    fn list_requested_reviewers<'a>(
+        &'a self,
+        locator: &'a PullRequestLocator,
+    ) -> ClientFuture<'a, Vec<AuthorLogin>>;
+
+    /// Request a review from the named reviewers on a pull request (slice 0017). The call
+    /// is additive: a reviewer already on the review-request list is a no-op server-side,
+    /// but the rule short-circuits before calling this with an empty or redundant list.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] if the provider call fails.
+    fn request_reviewers<'a>(
+        &'a self,
+        locator: &'a PullRequestLocator,
+        reviewers: &'a [AuthorLogin],
+    ) -> ClientFuture<'a, ()>;
 }
 
 /// One concrete write a rule produced (slice 0016).
@@ -215,6 +247,12 @@ pub enum ReactionKind {
     LabelRemoved {
         /// Which label.
         label: Label,
+    },
+    /// A review request was sent to one or more reviewers (slice 0017).
+    ReviewRequested {
+        /// The reviewers the rule actually requested on this tick (the missing subset, not
+        /// the full configured list).
+        reviewers: Vec<AuthorLogin>,
     },
 }
 
@@ -261,6 +299,23 @@ pub trait MergeableHistory: Send + Sync {
     /// Returns a reader-defined message when the store query failed. The react crate
     /// wraps that into [`ReactError::History`] without reinterpreting it.
     fn latest_settled(&self, locator: &PullRequestLocator) -> Result<Option<Mergeable>, String>;
+}
+
+/// Access to the stored draft flag of the most recent observation of a pull request. Needed
+/// so that the review-requested rule (slice 0017) can decide a draft→ready transition
+/// even when the in-memory `prior` is `None` (fresh task after restart).
+///
+/// Draft is binary, so there is no `Unknown` to bridge, unlike [`MergeableHistory`]: a
+/// `None` result means the store has no row for the pull request at all.
+pub trait DraftHistory: Send + Sync {
+    /// The `draft` field of the most recent stored observation for this pull request, or
+    /// `Ok(None)` when the store has no row for it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a reader-defined message when the store query failed. The react crate wraps
+    /// that into [`ReactError::History`] without reinterpreting it.
+    fn last_draft(&self, locator: &PullRequestLocator) -> Result<Option<bool>, String>;
 }
 
 /// Build the standard three-identity [`Attribution`] a rule records with every write.
@@ -510,6 +565,95 @@ fn needs_rebase_transition(
         (Some(Mergeable::Conflicting), Mergeable::Mergeable) => Ok(Some(LabelTransition::Remove)),
         _ => Ok(None),
     }
+}
+
+/// Slice 0017 rule: when a pull request transitions from draft to ready-for-review and
+/// the operator configured at least one reviewer, request a review from each configured
+/// reviewer who is not already on the review-request list.
+///
+/// The idempotency witness is the review-request list itself: the rule reads the current
+/// list, computes the subset of configured reviewers that are missing, and writes only that
+/// subset. An empty missing set short-circuits to [`ReactionOutcome::AlreadySettled`] so
+/// the audit trail distinguishes "we did nothing because it was already in place" from a
+/// real write. No live re-fetch is performed: invariant 4 specifically names mergeability,
+/// approval and branch-protection as the state an event payload cannot source
+/// authoritatively, and `draft` is none of those. See the slice 0017 Design section for
+/// the deliberate non-decision.
+///
+/// # Errors
+///
+/// Returns [`ReactError::Provider`] if listing requested reviewers or calling
+/// `request_reviewers` failed. Returns [`ReactError::History`] if the history walk failed.
+#[allow(clippy::too_many_arguments)]
+pub async fn react_review_requested(
+    owner: &UserId,
+    worker: &WorkerId,
+    locator: &PullRequestLocator,
+    prior: Option<&ObservedPullRequest>,
+    new: &ObservedPullRequest,
+    history: &dyn DraftHistory,
+    client: &dyn ProviderClient,
+    reviewers: &[AuthorLogin],
+) -> Result<ReactionOutcome, ReactError> {
+    if reviewers.is_empty() {
+        return Ok(ReactionOutcome::NotApplicable);
+    }
+    if !is_draft_to_ready_transition(locator, prior, new, history)? {
+        return Ok(ReactionOutcome::NotApplicable);
+    }
+
+    let present = client.list_requested_reviewers(locator).await?;
+    let missing = missing_reviewers(reviewers, &present);
+    if missing.is_empty() {
+        return Ok(ReactionOutcome::AlreadySettled);
+    }
+
+    client.request_reviewers(locator, &missing).await?;
+    Ok(ReactionOutcome::Posted {
+        receipt: ReactionReceipt {
+            attribution: attribution_for(owner, worker, REVIEW_REQUESTED_RULE_AGENT_ID),
+            kind: ReactionKind::ReviewRequested { reviewers: missing },
+        },
+    })
+}
+
+/// Qualifying transition for the review-requested rule: the new observation is ready
+/// (`draft == false`) and the effective prior was draft (`draft == true`). The effective
+/// prior comes from the in-memory `prior`, or from the history walk when the in-memory
+/// value is absent (fresh task after restart). None history => no transition evidenced
+/// => `NotApplicable`.
+fn is_draft_to_ready_transition(
+    locator: &PullRequestLocator,
+    prior: Option<&ObservedPullRequest>,
+    new: &ObservedPullRequest,
+    history: &dyn DraftHistory,
+) -> Result<bool, ReactError> {
+    if new.draft {
+        return Ok(false);
+    }
+    let was_draft = match prior {
+        Some(p) => p.draft,
+        None => match history.last_draft(locator).map_err(ReactError::History)? {
+            Some(d) => d,
+            None => return Ok(false),
+        },
+    };
+    Ok(was_draft)
+}
+
+/// The subset of `configured` whose logins are not already on `present`. Preserves the
+/// input order and deduplicates: if the operator configured the same login twice, the rule
+/// requests it once.
+fn missing_reviewers(configured: &[AuthorLogin], present: &[AuthorLogin]) -> Vec<AuthorLogin> {
+    let mut out: Vec<AuthorLogin> = Vec::new();
+    for reviewer in configured {
+        let already_out = out.iter().any(|r| r == reviewer);
+        let already_present = present.iter().any(|r| r == reviewer);
+        if !already_out && !already_present {
+            out.push(reviewer.clone());
+        }
+    }
+    out
 }
 
 /// Fold a slice of per-rule results into the single [`ReactionReport`] the poll loop

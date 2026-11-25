@@ -9,12 +9,12 @@
 )]
 
 use contributron_domain::pull_request::{
-    Label, Mergeable, ObservedPullRequest, PullRequestAuthor, PullRequestNumber, ReviewThread,
-    ThreadId, ThreadResolution,
+    AuthorLogin, Label, Mergeable, ObservedPullRequest, PullRequestAuthor, PullRequestNumber,
+    ReviewThread, ThreadId, ThreadResolution,
 };
 use contributron_poll::PullRequestLocator;
 use contributron_react::{
-    ClientFuture, ExistingComment, MergeableHistory, ProviderClient, ProviderError,
+    ClientFuture, DraftHistory, ExistingComment, MergeableHistory, ProviderClient, ProviderError,
 };
 use std::collections::BTreeSet;
 use std::sync::Mutex;
@@ -58,6 +58,24 @@ pub fn pr_with_mergeable(mergeable: Mergeable) -> ObservedPullRequest {
     )
 }
 
+/// Build an observation whose `draft` flag is the given value and whose threads/
+/// mergeability are the slice 0017 don't-care defaults.
+pub fn pr_with_draft(draft: bool) -> ObservedPullRequest {
+    ObservedPullRequest::new(
+        PullRequestNumber::new(1).expect("number"),
+        "example",
+        draft,
+        PullRequestAuthor::DeletedAccount,
+        Mergeable::Unknown,
+        Vec::new(),
+    )
+}
+
+/// A validated author login value, for configuring reviewer lists in the slice 0017 tests.
+pub fn login(value: &str) -> AuthorLogin {
+    AuthorLogin::new(value).expect("login")
+}
+
 pub fn locator() -> PullRequestLocator {
     PullRequestLocator {
         owner: "alice".to_owned(),
@@ -79,9 +97,10 @@ pub enum LiveMerge {
     Computing,
 }
 
-/// Fake provider client: in-memory comments and labels, records every post and label
-/// mutation, and a swappable live-merge response for slice 0015/0016 tests. Doubles as a
-/// [`MergeableHistory`] for history-walk tests.
+/// Fake provider client: in-memory comments, labels and review-request list, records every
+/// post, label mutation and review-request call, a swappable live-merge response for
+/// slice 0015/0016 tests, and an in-memory draft-history value for slice 0017. Doubles as a
+/// [`MergeableHistory`] and [`DraftHistory`] for history-walk tests.
 #[derive(Debug)]
 pub struct FakeClient {
     existing: Mutex<Vec<ExistingComment>>,
@@ -93,6 +112,12 @@ pub struct FakeClient {
     labels_err: Mutex<Option<String>>,
     added_labels: Mutex<Vec<String>>,
     removed_labels: Mutex<Vec<String>>,
+    requested_reviewers: Mutex<Vec<String>>,
+    requested_reviewers_err: Mutex<Option<String>>,
+    request_reviewers_err: Mutex<Option<String>>,
+    request_reviewers_calls: Mutex<Vec<Vec<String>>>,
+    draft_history: Mutex<Option<bool>>,
+    draft_history_err: Mutex<Option<String>>,
 }
 
 impl Default for FakeClient {
@@ -107,6 +132,12 @@ impl Default for FakeClient {
             labels_err: Mutex::new(None),
             added_labels: Mutex::new(Vec::new()),
             removed_labels: Mutex::new(Vec::new()),
+            requested_reviewers: Mutex::new(Vec::new()),
+            requested_reviewers_err: Mutex::new(None),
+            request_reviewers_err: Mutex::new(None),
+            request_reviewers_calls: Mutex::new(Vec::new()),
+            draft_history: Mutex::new(None),
+            draft_history_err: Mutex::new(None),
         }
     }
 }
@@ -170,6 +201,61 @@ impl FakeClient {
     pub fn removed_labels(&self) -> Vec<String> {
         self.removed_labels.lock().expect("removed").clone()
     }
+
+    /// Seed the reviewers currently on the review-request list.
+    pub fn set_requested_reviewers(&self, reviewers: impl IntoIterator<Item = &'static str>) {
+        let mut guard = self
+            .requested_reviewers
+            .lock()
+            .expect("requested_reviewers");
+        guard.clear();
+        for r in reviewers {
+            guard.push(r.to_owned());
+        }
+    }
+
+    /// Force the `list_requested_reviewers` call to error on the next call.
+    pub fn set_requested_reviewers_err(&self, message: impl Into<String>) {
+        *self
+            .requested_reviewers_err
+            .lock()
+            .expect("requested_reviewers_err") = Some(message.into());
+    }
+
+    /// Force the `request_reviewers` call to error on the next call.
+    pub fn set_request_reviewers_err(&self, message: impl Into<String>) {
+        *self
+            .request_reviewers_err
+            .lock()
+            .expect("request_reviewers_err") = Some(message.into());
+    }
+
+    /// Everything `request_reviewers` was called with, in order (each call's full argument
+    /// list, so a test can assert the exact subset the rule computed).
+    pub fn request_reviewers_calls(&self) -> Vec<Vec<String>> {
+        self.request_reviewers_calls
+            .lock()
+            .expect("request_reviewers_calls")
+            .clone()
+    }
+
+    /// Snapshot of who is currently on the review-request list (after applied writes).
+    pub fn requested_reviewers_snapshot(&self) -> Vec<String> {
+        self.requested_reviewers
+            .lock()
+            .expect("requested_reviewers")
+            .clone()
+    }
+
+    /// Configure what the fake's [`DraftHistory::last_draft`] returns.
+    pub fn set_draft_history(&self, found: Option<bool>) {
+        *self.draft_history.lock().expect("draft_history") = found;
+    }
+
+    /// Force the draft-history query to error on the next call.
+    pub fn set_draft_history_err(&self, message: impl Into<String>) {
+        *self.draft_history_err.lock().expect("draft_history_err") = Some(message.into());
+    }
 }
 
 impl MergeableHistory for FakeClient {
@@ -178,6 +264,20 @@ impl MergeableHistory for FakeClient {
             return Err(msg);
         }
         Ok(*self.history.lock().expect("history"))
+    }
+}
+
+impl DraftHistory for FakeClient {
+    fn last_draft(&self, _locator: &PullRequestLocator) -> Result<Option<bool>, String> {
+        if let Some(msg) = self
+            .draft_history_err
+            .lock()
+            .expect("draft_history_err")
+            .clone()
+        {
+            return Err(msg);
+        }
+        Ok(*self.draft_history.lock().expect("draft_history"))
     }
 }
 
@@ -272,6 +372,70 @@ impl ProviderClient for FakeClient {
                 .lock()
                 .map_err(|e| ProviderError::Client(format!("poisoned labels lock: {e}")))?
                 .remove(&name);
+            Ok(())
+        })
+    }
+
+    fn list_requested_reviewers<'a>(
+        &'a self,
+        _locator: &'a PullRequestLocator,
+    ) -> ClientFuture<'a, Vec<AuthorLogin>> {
+        if let Some(msg) = self
+            .requested_reviewers_err
+            .lock()
+            .expect("requested_reviewers_err")
+            .clone()
+        {
+            return Box::pin(async move { Err(ProviderError::Client(msg)) });
+        }
+        let snapshot = self
+            .requested_reviewers
+            .lock()
+            .expect("requested_reviewers")
+            .clone();
+        Box::pin(async move {
+            let mut out = Vec::with_capacity(snapshot.len());
+            for name in snapshot {
+                out.push(AuthorLogin::new(name).map_err(|_| {
+                    ProviderError::Client(
+                        "fake returned a login that does not pass AuthorLogin::new".to_owned(),
+                    )
+                })?);
+            }
+            Ok(out)
+        })
+    }
+
+    fn request_reviewers<'a>(
+        &'a self,
+        _locator: &'a PullRequestLocator,
+        reviewers: &'a [AuthorLogin],
+    ) -> ClientFuture<'a, ()> {
+        let names: Vec<String> = reviewers.iter().map(|r| r.as_str().to_owned()).collect();
+        Box::pin(async move {
+            if let Some(msg) = self
+                .request_reviewers_err
+                .lock()
+                .map_err(|e| ProviderError::Client(format!("poisoned request_reviewers_err: {e}")))?
+                .take()
+            {
+                return Err(ProviderError::Client(msg));
+            }
+            self.request_reviewers_calls
+                .lock()
+                .map_err(|e| {
+                    ProviderError::Client(format!("poisoned request_reviewers_calls: {e}"))
+                })?
+                .push(names.clone());
+            let mut guard = self
+                .requested_reviewers
+                .lock()
+                .map_err(|e| ProviderError::Client(format!("poisoned requested_reviewers: {e}")))?;
+            for name in names {
+                if !guard.iter().any(|r| r == &name) {
+                    guard.push(name);
+                }
+            }
             Ok(())
         })
     }

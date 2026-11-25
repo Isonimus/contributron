@@ -11,7 +11,7 @@
 //! conversation comments that `POST` on the same path appends to. Review-thread comments
 //! are a different endpoint and not what this rule posts.
 
-use contributron_domain::pull_request::Label;
+use contributron_domain::pull_request::{AuthorLogin, Label};
 use contributron_poll::PullRequestLocator;
 use contributron_react::{ClientFuture, ExistingComment, ProviderClient, ProviderError};
 
@@ -203,6 +203,63 @@ impl ProviderClient for GitHubClient {
                 .remove_label(locator.number, label.as_str())
                 .await
                 .map_err(|e| ProviderError::Client(format!("removing a label: {e}")))?;
+            Ok(())
+        })
+    }
+
+    /// Slice 0017: list the reviewers currently requested on a pull request. The GitHub
+    /// endpoint returns users and teams; this rule only consults the user axis, so team
+    /// review-requests are dropped at the boundary. A reviewer login that cannot be
+    /// validated as an [`AuthorLogin`] is surfaced as a [`ProviderError::Client`] rather
+    /// than silently dropped: finding 3 of the 2026-11-25 review (different site, same
+    /// rule).
+    ///
+    /// Single-page read: a pull request with more than one page of requested reviewers
+    /// (`per_page == 100`) will have its tail of reviewers hidden. The ledger carries the
+    /// pagination item alongside the pre-existing `list_labels` and `list_comments`
+    /// deferrals.
+    fn list_requested_reviewers<'a>(
+        &'a self,
+        locator: &'a PullRequestLocator,
+    ) -> ClientFuture<'a, Vec<AuthorLogin>> {
+        Box::pin(async move {
+            let page = self
+                .inner
+                .pulls(&locator.owner, &locator.repo)
+                .list_requested_reviewers(locator.number)
+                .await
+                .map_err(|e| ProviderError::Client(format!("listing requested reviewers: {e}")))?;
+            let mut out: Vec<AuthorLogin> = Vec::with_capacity(page.users.len());
+            for u in page.users {
+                let login = AuthorLogin::new(u.login).map_err(|_| {
+                    ProviderError::Client(
+                        "GitHub returned a requested-reviewer login that did not pass \
+                         AuthorLogin::new (empty or whitespace-only)"
+                            .to_owned(),
+                    )
+                })?;
+                out.push(login);
+            }
+            Ok(out)
+        })
+    }
+
+    /// Slice 0017: request a review from one or more users on a pull request. Team review
+    /// requests are not emitted by the review-requested rule; the GitHub call takes both
+    /// axes and the empty team list carries the intent.
+    fn request_reviewers<'a>(
+        &'a self,
+        locator: &'a PullRequestLocator,
+        reviewers: &'a [AuthorLogin],
+    ) -> ClientFuture<'a, ()> {
+        Box::pin(async move {
+            let users: Vec<String> = reviewers.iter().map(|r| r.as_str().to_owned()).collect();
+            let teams: Vec<String> = Vec::new();
+            self.inner
+                .pulls(&locator.owner, &locator.repo)
+                .request_reviews(locator.number, users, teams)
+                .await
+                .map_err(|e| ProviderError::Client(format!("requesting reviewers: {e}")))?;
             Ok(())
         })
     }

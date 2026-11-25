@@ -111,6 +111,13 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
   deserializer that distinguishes "field absent" from "field null", and route the former to
   a field-named `NormalizeError::MissingField`. Found by the 2026-11-25 adversarial review
   of slice 0015 (finding 6) (ADR-0001).
+- [feature] Paginate PR requested reviewers in `GitHubClient::list_requested_reviewers`. The
+  slice-0017 rule reads the first page only (same `.per_page(COMMENT_PAGE_SIZE)` shape as
+  `list_labels`), so on a PR with more than one page of already-requested reviewers the rule
+  may re-request a reviewer that sits past page 1. Low impact (the provider deduplicates on
+  the server), but the symptom is a user-visible GitHub notification storm on the rare case.
+  Same bug class as the ledgered `list_labels`, `list_comments` and `reviewThreads`
+  pagination items (ADR-0001).
 - [feature] Paginate PR labels in `GitHubClient::list_labels`. The membership check reads the
   first page only (`.per_page(COMMENT_PAGE_SIZE)` in `crates/github/src/client.rs`), so on a
   PR with more than one page of labels the slice-0016 rule can miss `needs-rebase` sitting on

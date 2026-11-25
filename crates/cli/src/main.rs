@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use contributron_cli::token::Source as TokenSource;
 use contributron_cli::{render_state, token};
 use contributron_domain::actor::{UserId, WorkerId};
-use contributron_domain::pull_request::Label;
+use contributron_domain::pull_request::{AuthorLogin, Label};
 use contributron_github::{
     GitHubClient, PullRequestLocator as GhLocator, capture_pull_request, normalize_capture,
 };
@@ -14,8 +14,9 @@ use contributron_poll::{
     ReactorFuture, Tick, TickOutcome, poll_once, run_loop_with_reactor,
 };
 use contributron_react::{
-    ClientFuture, ExistingComment, MergeableHistory, ProviderClient, ProviderError,
+    ClientFuture, DraftHistory, ExistingComment, MergeableHistory, ProviderClient, ProviderError,
     combine_rule_results, react, react_merge_conflicts_cleared, react_needs_rebase_label,
+    react_review_requested,
 };
 use contributron_store::EventStore;
 use std::path::{Path, PathBuf};
@@ -100,6 +101,12 @@ enum Command {
         /// `git credential` is the final fallback.
         #[arg(long = "token-path")]
         token_path: Option<PathBuf>,
+        /// A reviewer login the review-requested rule will request on a draft→ready
+        /// transition (slice 0017). Repeat for multiple. Flag takes precedence over the
+        /// `CONTRIBUTRON_REVIEWERS` env var (comma-separated). An empty list disables the
+        /// rule, leaving the read path intact for token-less watches.
+        #[arg(long = "reviewer")]
+        reviewers: Vec<String>,
     },
 }
 
@@ -120,7 +127,8 @@ fn main() -> Result<()> {
             interval_secs,
             store,
             token_path,
-        } => run_watch(targets, interval_secs, &store, token_path),
+            reviewers,
+        } => run_watch(targets, interval_secs, &store, token_path, reviewers),
     }
 }
 
@@ -223,6 +231,7 @@ fn run_watch(
     interval_secs: u64,
     store_path: &Path,
     token_path: Option<PathBuf>,
+    reviewers: Vec<String>,
 ) -> Result<()> {
     if targets.is_empty() {
         return Err(anyhow!(
@@ -230,6 +239,7 @@ fn run_watch(
         ));
     }
     let interval = validate_interval_secs(interval_secs)?;
+    let reviewers = resolve_reviewers(reviewers)?;
 
     let owner = UserId::new(LOCAL_USER);
     let config = PollConfig {
@@ -243,13 +253,14 @@ fn run_watch(
         .build()
         .context("starting an async runtime for the watch")?;
 
-    runtime.block_on(watch_loop(config, store_path, token_path))
+    runtime.block_on(watch_loop(config, store_path, token_path, reviewers))
 }
 
 async fn watch_loop(
     config: PollConfig,
     store_path: &Path,
     token_path: Option<PathBuf>,
+    reviewers: Vec<AuthorLogin>,
 ) -> Result<()> {
     // ADR-0013 consequence 3: the read path works on public repos without a credential, so
     // `watch` reads the token optionally and the fetch sends it when present.
@@ -260,6 +271,7 @@ async fn watch_loop(
         token.clone(),
         owner,
         store_path.to_path_buf(),
+        Arc::new(reviewers),
     )?);
     let fetch: Fetch = Arc::new(move |locator: PullRequestLocator| {
         let token = token.clone();
@@ -337,6 +349,7 @@ fn build_reactor(
     token: Option<contributron_cli::secret::SecretString>,
     owner: UserId,
     store_path: PathBuf,
+    reviewers: Arc<Vec<AuthorLogin>>,
 ) -> Result<Reactor> {
     let client: Arc<dyn ProviderClient> = match token {
         Some(token) => Arc::new(
@@ -346,20 +359,26 @@ fn build_reactor(
         None => Arc::new(MissingTokenClient),
     };
     let worker = WorkerId::new(CLI_WORKER);
-    let history: Arc<dyn MergeableHistory> = Arc::new(StoreMergeableHistory {
+    let mergeable_history: Arc<dyn MergeableHistory> = Arc::new(StoreMergeableHistory {
+        store_path: store_path.clone(),
+        owner: owner.clone(),
+    });
+    let draft_history: Arc<dyn DraftHistory> = Arc::new(StoreDraftHistory {
         store_path,
         owner: owner.clone(),
     });
     let reactor: Reactor = Arc::new(move |locator, prior, new| {
         let client = Arc::clone(&client);
-        let history = Arc::clone(&history);
+        let mergeable_history = Arc::clone(&mergeable_history);
+        let draft_history = Arc::clone(&draft_history);
+        let reviewers = Arc::clone(&reviewers);
         let owner = owner.clone();
         let worker = worker.clone();
         Box::pin(async move {
-            // Three rules (slice 0014, 0015, 0016). All three run on every tick: one rule's
-            // error must not starve a sibling, and one sibling's error must not swallow
-            // another's write (finding 4 of the 2026-11-25 review). The combiner folds
-            // the receipts across rules so every write that happened is attributed.
+            // Four rules (slice 0014, 0015, 0016, 0017). All four run on every tick: one
+            // rule's error must not starve a sibling, and one sibling's error must not
+            // swallow another's write (finding 4 of the 2026-11-25 review). The combiner
+            // folds the receipts across rules so every write that happened is attributed.
             //
             // Sequential rather than joined: the shared octocrab client already serialises
             // its own requests in practice, and an `Arc<dyn ProviderClient>` offers no
@@ -380,7 +399,7 @@ fn build_reactor(
                 &locator,
                 prior.as_ref(),
                 &new,
-                history.as_ref(),
+                mergeable_history.as_ref(),
                 client.as_ref(),
             )
             .await;
@@ -390,14 +409,26 @@ fn build_reactor(
                 &locator,
                 prior.as_ref(),
                 &new,
-                history.as_ref(),
+                mergeable_history.as_ref(),
                 client.as_ref(),
+            )
+            .await;
+            let review = react_review_requested(
+                &owner,
+                &worker,
+                &locator,
+                prior.as_ref(),
+                &new,
+                draft_history.as_ref(),
+                client.as_ref(),
+                reviewers.as_ref(),
             )
             .await;
             combine_rule_results(&[
                 (contributron_react::RULE_AGENT_ID, threads),
                 (contributron_react::MERGE_RULE_AGENT_ID, merge),
                 (contributron_react::LABEL_RULE_AGENT_ID, label),
+                (contributron_react::REVIEW_REQUESTED_RULE_AGENT_ID, review),
             ])
         }) as ReactorFuture
     });
@@ -426,6 +457,30 @@ impl MergeableHistory for StoreMergeableHistory {
             .latest_settled_mergeable_for_number(locator.number)
             .map_err(|e| format!("reading history: {e}"))?;
         Ok(found.map(|o| o.mergeable))
+    }
+}
+
+/// Implements [`DraftHistory`] by opening the event store on demand and reading the `draft`
+/// flag of the most recent observation for the pull request. Draft is binary, so unlike
+/// `StoreMergeableHistory` there is no "settled" filter to apply — any stored row is
+/// usable. Same fresh-connection-per-lookup pattern as the mergeable history.
+#[derive(Debug, Clone)]
+struct StoreDraftHistory {
+    store_path: PathBuf,
+    owner: UserId,
+}
+
+impl DraftHistory for StoreDraftHistory {
+    fn last_draft(
+        &self,
+        locator: &contributron_poll::PullRequestLocator,
+    ) -> Result<Option<bool>, String> {
+        let store = EventStore::open(&self.store_path, self.owner.clone())
+            .map_err(|e| format!("opening store: {e}"))?;
+        let found = store
+            .latest_for_number(locator.number)
+            .map_err(|e| format!("reading history: {e}"))?;
+        Ok(found.map(|o| o.draft))
     }
 }
 
@@ -515,6 +570,33 @@ impl ProviderClient for MissingTokenClient {
             ))
         })
     }
+
+    fn list_requested_reviewers<'a>(
+        &'a self,
+        _locator: &'a PullRequestLocator,
+    ) -> ClientFuture<'a, Vec<AuthorLogin>> {
+        Box::pin(async {
+            Err(ProviderError::Client(
+                "no GitHub token available for the write path. Pass --token-path, set \
+                 CONTRIBUTRON_TOKEN, or store a github.com credential (ADR-0013)."
+                    .to_owned(),
+            ))
+        })
+    }
+
+    fn request_reviewers<'a>(
+        &'a self,
+        _locator: &'a PullRequestLocator,
+        _reviewers: &'a [AuthorLogin],
+    ) -> ClientFuture<'a, ()> {
+        Box::pin(async {
+            Err(ProviderError::Client(
+                "no GitHub token available for the write path. Pass --token-path, set \
+                 CONTRIBUTRON_TOKEN, or store a github.com credential (ADR-0013)."
+                    .to_owned(),
+            ))
+        })
+    }
 }
 
 fn report_tick(tick: &Tick) {
@@ -595,6 +677,50 @@ fn parse_repo(repo: &str, number: u64) -> Result<GhLocator> {
     })
 }
 
+/// Resolves the reviewer list for the review-requested rule (slice 0017). `--reviewer`
+/// flags win over the `CONTRIBUTRON_REVIEWERS` env var; when the flag list is empty the env
+/// value is split on commas, each entry is trimmed, and empty entries are skipped. Every
+/// surviving entry is validated through [`AuthorLogin::new`] so a typo'd login is rejected
+/// at the CLI boundary rather than at the first draft→ready transition.
+///
+/// An empty result disables the rule: the reactor still runs, but `react_review_requested`
+/// reports `NotApplicable` without touching the client, so a token-less public-repo watch
+/// is unaffected.
+fn resolve_reviewers(flag: Vec<String>) -> Result<Vec<AuthorLogin>> {
+    let env = std::env::var("CONTRIBUTRON_REVIEWERS").ok();
+    resolve_reviewers_with_env(flag, env.as_deref())
+}
+
+/// The env-var side of [`resolve_reviewers`], split out so unit tests can pass the env
+/// value directly rather than mutating the process environment (the workspace forbids
+/// `unsafe_code`, and `std::env::set_var` became `unsafe` in edition 2024).
+fn resolve_reviewers_with_env(
+    flag: Vec<String>,
+    env_value: Option<&str>,
+) -> Result<Vec<AuthorLogin>> {
+    let raw: Vec<String> = if flag.is_empty() {
+        match env_value {
+            Some(value) => value
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToOwned::to_owned)
+                .collect(),
+            None => Vec::new(),
+        }
+    } else {
+        flag
+    };
+    let mut out: Vec<AuthorLogin> = Vec::with_capacity(raw.len());
+    for login in raw {
+        let validated = AuthorLogin::new(login.clone()).map_err(|_| {
+            anyhow!("reviewer login {login:?} is empty or whitespace-only (ADR-0005)")
+        })?;
+        out.push(validated);
+    }
+    Ok(out)
+}
+
 /// Validates `--interval-secs`, converting the accepted range `[1, MAX_INTERVAL_SECS]` to a
 /// `Duration`. The upper bound is a boundary check against the overflow class the review
 /// flagged (finding 2 of 2026-11-24): values high enough to make `Instant + Duration`
@@ -642,8 +768,49 @@ fn parse_target(raw: &str) -> Result<PullRequestLocator, String> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod parse_target_tests {
-    use super::{MAX_INTERVAL_SECS, parse_target, validate_interval_secs};
+    use super::{
+        MAX_INTERVAL_SECS, parse_target, resolve_reviewers_with_env, validate_interval_secs,
+    };
     use std::time::Duration;
+
+    #[test]
+    fn empty_reviewer_list_with_no_env_value_resolves_to_empty() {
+        let got = resolve_reviewers_with_env(Vec::new(), None).expect("resolve");
+        assert_eq!(
+            got.iter()
+                .map(|r| r.as_str().to_owned())
+                .collect::<Vec<_>>(),
+            Vec::<String>::new(),
+        );
+    }
+
+    #[test]
+    fn env_value_is_used_when_no_flag_present() {
+        let got =
+            resolve_reviewers_with_env(Vec::new(), Some("alice,bob, carol ")).expect("resolve");
+        let names: Vec<String> = got.iter().map(|r| r.as_str().to_owned()).collect();
+        assert_eq!(names, vec!["alice", "bob", "carol"]);
+    }
+
+    #[test]
+    fn flag_wins_over_env_value() {
+        let got = resolve_reviewers_with_env(vec!["from-flag".to_owned()], Some("from-env"))
+            .expect("resolve");
+        let names: Vec<String> = got.iter().map(|r| r.as_str().to_owned()).collect();
+        assert_eq!(names, vec!["from-flag"]);
+    }
+
+    #[test]
+    fn an_empty_or_whitespace_reviewer_login_is_refused_at_the_cli_boundary() {
+        resolve_reviewers_with_env(vec!["   ".to_owned()], None).expect_err("empty");
+    }
+
+    #[test]
+    fn env_value_entries_that_are_only_whitespace_are_skipped() {
+        let got = resolve_reviewers_with_env(Vec::new(), Some(",alice, ,bob,")).expect("resolve");
+        let names: Vec<String> = got.iter().map(|r| r.as_str().to_owned()).collect();
+        assert_eq!(names, vec!["alice", "bob"]);
+    }
 
     #[test]
     fn a_zero_interval_is_refused() {

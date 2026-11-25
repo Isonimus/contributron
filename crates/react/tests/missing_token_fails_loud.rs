@@ -18,13 +18,13 @@
 
 mod common;
 
-use common::{locator, pr, pr_with_mergeable};
+use common::{locator, login, pr, pr_with_draft, pr_with_mergeable};
 use contributron_domain::actor::{UserId, WorkerId};
-use contributron_domain::pull_request::{Label, Mergeable};
+use contributron_domain::pull_request::{AuthorLogin, Label, Mergeable};
 use contributron_poll::PullRequestLocator;
 use contributron_react::{
-    ClientFuture, ExistingComment, MergeableHistory, ProviderClient, ProviderError, ReactError,
-    react, react_needs_rebase_label,
+    ClientFuture, DraftHistory, ExistingComment, MergeableHistory, ProviderClient, ProviderError,
+    ReactError, react, react_needs_rebase_label, react_review_requested,
 };
 use std::sync::Mutex;
 
@@ -89,6 +89,37 @@ impl ProviderClient for NoCredentialClient {
     ) -> ClientFuture<'a, ()> {
         self.calls.lock().expect("calls").push("remove_label");
         Box::pin(async { Err(ProviderError::Client(MISSING_CREDENTIAL.to_owned())) })
+    }
+
+    fn list_requested_reviewers<'a>(
+        &'a self,
+        _locator: &'a PullRequestLocator,
+    ) -> ClientFuture<'a, Vec<AuthorLogin>> {
+        self.calls
+            .lock()
+            .expect("calls")
+            .push("list_requested_reviewers");
+        Box::pin(async { Err(ProviderError::Client(MISSING_CREDENTIAL.to_owned())) })
+    }
+
+    fn request_reviewers<'a>(
+        &'a self,
+        _locator: &'a PullRequestLocator,
+        _reviewers: &'a [AuthorLogin],
+    ) -> ClientFuture<'a, ()> {
+        self.calls.lock().expect("calls").push("request_reviewers");
+        Box::pin(async { Err(ProviderError::Client(MISSING_CREDENTIAL.to_owned())) })
+    }
+}
+
+/// A trivial [`DraftHistory`] that says the stored prior was draft. Used by the slice 0017
+/// write-path test so the transition gate sees draft→ready without walking any store.
+#[derive(Debug, Default)]
+struct DraftHistoryWasDraft;
+
+impl DraftHistory for DraftHistoryWasDraft {
+    fn last_draft(&self, _locator: &PullRequestLocator) -> Result<Option<bool>, String> {
+        Ok(Some(true))
     }
 }
 
@@ -232,5 +263,79 @@ async fn remove_transition_without_a_credential_errors_before_any_label_mutation
             .iter()
             .any(|c| *c == "add_label" || *c == "remove_label"),
         "no label mutation should run after a failed live read, got {calls:?}",
+    );
+}
+
+/// Slice 0017 DoD 6: a draft→ready transition without a credential surfaces the ADR-0013
+/// error. The first client method the rule needs is `list_requested_reviewers`; its
+/// credential error short-circuits before any write.
+#[tokio::test]
+async fn review_requested_without_a_credential_errors_before_any_write() {
+    let client = NoCredentialClient::default();
+    let owner = UserId::new("alice");
+    let worker = WorkerId::new("poll");
+    let loc = locator();
+    let history = DraftHistoryWasDraft;
+    let prior = pr_with_draft(true);
+    let new = pr_with_draft(false);
+    let reviewers = vec![login("reviewer-one")];
+
+    let error = react_review_requested(
+        &owner,
+        &worker,
+        &loc,
+        Some(&prior),
+        &new,
+        &history,
+        &client,
+        &reviewers,
+    )
+    .await
+    .expect_err("missing credential must fail loud");
+
+    assert_credential_error(&error);
+
+    let calls = client.calls.lock().expect("calls").clone();
+    assert!(
+        !calls.contains(&"request_reviewers"),
+        "no request write should run after a failed list read, got {calls:?}",
+    );
+}
+
+/// Slice 0017 read-path half: a non-qualifying tick (no draft→ready transition) with
+/// reviewers configured and no credential still reports `NotApplicable` without touching
+/// the client. The configured reviewers alone do not cost a provider call.
+#[tokio::test]
+async fn review_requested_without_a_transition_does_not_touch_the_client() {
+    let client = NoCredentialClient::default();
+    let owner = UserId::new("alice");
+    let worker = WorkerId::new("poll");
+    let loc = locator();
+    let history = DraftHistoryWasDraft;
+    let new = pr_with_draft(false);
+    let reviewers = vec![login("reviewer-one")];
+
+    let prior = pr_with_draft(false);
+
+    let outcome = react_review_requested(
+        &owner,
+        &worker,
+        &loc,
+        Some(&prior),
+        &new,
+        &history,
+        &client,
+        &reviewers,
+    )
+    .await
+    .expect("a non-transition tick never fires");
+
+    assert!(matches!(
+        outcome,
+        contributron_react::ReactionOutcome::NotApplicable,
+    ));
+    assert!(
+        client.calls.lock().expect("calls").is_empty(),
+        "the client must not be touched when no transition fires",
     );
 }
