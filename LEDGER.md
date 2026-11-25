@@ -111,6 +111,19 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
   deserializer that distinguishes "field absent" from "field null", and route the former to
   a field-named `NormalizeError::MissingField`. Found by the 2026-11-25 adversarial review
   of slice 0015 (finding 6) (ADR-0001).
+- [feature] Paginate PR labels in `GitHubClient::list_labels`. The membership check reads the
+  first page only (`.per_page(COMMENT_PAGE_SIZE)` in `crates/github/src/client.rs`), so on a
+  PR with more than one page of labels the slice-0016 rule can miss `needs-rebase` sitting on
+  page 2: Apply re-adds harmlessly, Remove reports `AlreadySettled` and the stale label stays.
+  Same bug class as the ledgered `list_comments` pagination item. Found by the 2026-11-25
+  adversarial review of slice 0016 (finding 4) (ADR-0001).
+- [bug] `GitHubClient::list_labels` silently drops provider labels that fail
+  `Label::new` via `filter_map(|l| Label::new(l.name).ok())` in `crates/github/src/client.rs`,
+  which swallows a normalization error against the fail-loud rule. Low blast radius because
+  GitHub trims label names and the only consumer compares against the trimmed `needs-rebase`
+  literal, so a mispadded sibling label does not currently cause a misclassification.
+  Fix: propagate a `NormalizeError` the way review-thread normalization does. Found by the
+  2026-11-25 adversarial review of slice 0016 (finding 3) (ADR-0001).
 - [feature] Paginate `reviewThreads`. A capture reads the first 100 threads
   (`THREAD_PAGE_SIZE` in `crates/github/src/capture.rs`), and a pull request with more cannot
   be observed at all: the normalizer refuses a payload whose `pageInfo.hasNextPage` is true

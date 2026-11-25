@@ -21,6 +21,7 @@ use contributron_domain::pull_request::{Label, Mergeable, ObservedPullRequest};
 use contributron_poll::{PullRequestLocator, ReactionReport};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::LazyLock;
 
 /// The idempotency marker every post for this rule carries.
 ///
@@ -474,12 +475,18 @@ pub async fn react_needs_rebase_label(
     }
 }
 
-/// The canonical [`Label`] value for the needs-rebase rule. Panics are impossible here
-/// because [`NEEDS_REBASE_LABEL`] is a trimmed non-empty literal: a `const` cannot run the
-/// validator, so the first call to this function is the check.
+/// The canonical [`Label`] value for the needs-rebase rule. Built once on first access by
+/// a `LazyLock` so the validator's result is produced at startup rather than per tick, which
+/// keeps invariant 3 (no `expect` in the hot path) satisfied without an `#[allow]` on the
+/// reactor path. A broken literal surfaces as a startup panic the first time the rule runs,
+/// which is caught by the crate's unit tests.
 #[allow(clippy::expect_used)]
-fn needs_rebase_label() -> Label {
+static NEEDS_REBASE_LABEL_VALUE: LazyLock<Label> = LazyLock::new(|| {
     Label::new(NEEDS_REBASE_LABEL).expect("NEEDS_REBASE_LABEL is a valid Label by construction")
+});
+
+fn needs_rebase_label() -> Label {
+    NEEDS_REBASE_LABEL_VALUE.clone()
 }
 
 /// Qualifying transition for the needs-rebase-label rule: either Mergeable→Conflicting

@@ -518,14 +518,21 @@ fn success_delay(state: &TaskState, jitter_pending: &mut bool) -> Duration {
     }
 }
 
-/// Advance `prior` on reactor success, or park `observed` for retry on reactor failure.
+/// Advance `prior` on reactor success, or park `observed` for retry on reactor failure or
+/// partial failure.
 ///
-/// A `NotApplicable`, `AlreadySettled` or `Posted` decision means the reactor compared the
-/// prior against the new and reached a conclusion the next tick's comparison can build on;
-/// `prior` moves forward. A `Failed` decision means the comparison never completed, so
-/// `prior` stays where it was and the new observation parks as `pending_retry` for the next
-/// tick to retry (see the review's finding 1). Clearing `pending_retry` on success closes
-/// the retry loop.
+/// A `NotApplicable`, or a `Posted` / `AlreadySettled` with an empty `errors` list, means
+/// every rule compared the prior against the new and reached a conclusion the next tick's
+/// comparison can build on; `prior` moves forward. A `Failed` decision, or a partial
+/// outcome where at least one sibling rule errored, means at least one comparison never
+/// completed; `prior` stays where it was and the new observation parks as `pending_retry`
+/// for the next tick to retry. Rules are idempotent, so the sibling that already wrote this
+/// tick will report `AlreadySettled` on the retry and the previously-failing rule gets its
+/// chance. Clearing `pending_retry` on clean success closes the retry loop.
+///
+/// The partial-failure half addresses finding 1 of the 2026-11-25 adversarial review of
+/// slice 0016: without parking, a rule that errored beside a successful peer lost its
+/// transition forever because `prior` advanced past the gate.
 fn advance_or_park(
     prior: &mut Option<ObservedPullRequest>,
     pending_retry: &mut Option<ObservedPullRequest>,
@@ -534,6 +541,11 @@ fn advance_or_park(
 ) {
     match decision {
         ReactionReport::Failed { .. } => {
+            *pending_retry = Some(observed);
+        }
+        ReactionReport::AlreadySettled { errors, .. } | ReactionReport::Posted { errors, .. }
+            if !errors.is_empty() =>
+        {
             *pending_retry = Some(observed);
         }
         ReactionReport::NotApplicable
