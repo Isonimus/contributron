@@ -21,10 +21,10 @@ use contributron_react::{
 use std::collections::BTreeSet;
 
 fn owner() -> UserId {
-    UserId::new("alice")
+    UserId::new("alice").expect("static test id")
 }
 fn worker() -> WorkerId {
-    WorkerId::new("poll")
+    WorkerId::new("poll").expect("static test id")
 }
 
 fn assert_label_applied_receipt(outcome: &ReactionOutcome) {

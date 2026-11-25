@@ -34,7 +34,7 @@ async fn the_first_fresh_tick_sees_the_store_prior() {
         let store = EventStore::open(&store_path, owner.clone()).expect("open store");
         let attribution = Attribution {
             user: owner.clone(),
-            worker: WorkerId::new(POLL_WORKER),
+            worker: WorkerId::new(POLL_WORKER).expect("static test id"),
             agent: ExecutingAgent::NoAgent,
         };
         let observation = PullRequestObservation::new(attribution, before.clone());
@@ -66,7 +66,7 @@ async fn the_first_fresh_tick_sees_the_store_prior() {
         targets: vec![target.clone()],
         interval,
         owner: owner.clone(),
-        worker: WorkerId::new("cli"),
+        worker: WorkerId::new("cli").expect("static test id"),
     };
 
     let store_path_for_loop = store_path.clone();

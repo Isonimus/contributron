@@ -75,8 +75,8 @@ fn scripted_fetch(script: Vec<Result<ObservedPullRequest, &'static str>>) -> Fet
 }
 
 fn reactor_from(client: Arc<FakeClient>, reviewers: Arc<Vec<AuthorLogin>>) -> Reactor {
-    let owner = UserId::new("local-operator");
-    let worker = WorkerId::new("cli");
+    let owner = UserId::new("local-operator").expect("static test id");
+    let worker = WorkerId::new("cli").expect("static test id");
     Arc::new(move |locator, prior, new| {
         let client = Arc::clone(&client);
         let reviewers = Arc::clone(&reviewers);
@@ -135,8 +135,8 @@ async fn draft_to_ready_transition_requests_the_configured_reviewers() {
     let config = PollConfig {
         targets: vec![target.clone()],
         interval,
-        owner: UserId::new("local-operator"),
-        worker: WorkerId::new("cli"),
+        owner: UserId::new("local-operator").expect("static test id"),
+        worker: WorkerId::new("cli").expect("static test id"),
     };
 
     let store_path_for_loop = store_path.clone();
@@ -265,8 +265,8 @@ async fn draft_to_ready_without_a_credential_surfaces_the_adr_0013_error() {
 
     let reviewers = Arc::new(vec![login("reviewer-one")]);
 
-    let owner = UserId::new("local-operator");
-    let worker = WorkerId::new("cli");
+    let owner = UserId::new("local-operator").expect("static test id");
+    let worker = WorkerId::new("cli").expect("static test id");
     let client: Arc<dyn ProviderClient> = Arc::new(MissingTokenClient);
     let reactor: Reactor = {
         let reviewers = Arc::clone(&reviewers);
@@ -312,8 +312,8 @@ async fn draft_to_ready_without_a_credential_surfaces_the_adr_0013_error() {
     let config = PollConfig {
         targets: vec![target.clone()],
         interval,
-        owner: UserId::new("local-operator"),
-        worker: WorkerId::new("cli"),
+        owner: UserId::new("local-operator").expect("static test id"),
+        worker: WorkerId::new("cli").expect("static test id"),
     };
 
     let store_path_for_loop = store_path.clone();

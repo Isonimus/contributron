@@ -71,8 +71,8 @@ fn scripted_fetch(script: Vec<Result<ObservedPullRequest, &'static str>>) -> Fet
 /// shared [`FakeClient`], folding the rule's [`ReactionOutcome`] into the loop's
 /// [`ReactionReport`].
 fn reactor_from(client: Arc<FakeClient>) -> Reactor {
-    let owner = UserId::new("local-operator");
-    let worker = WorkerId::new("cli");
+    let owner = UserId::new("local-operator").expect("static test id");
+    let worker = WorkerId::new("cli").expect("static test id");
     Arc::new(move |locator, prior, new| {
         let client = Arc::clone(&client);
         let owner = owner.clone();
@@ -132,8 +132,8 @@ async fn conflict_then_mergeable_posts_once_then_unchanged_posts_nothing() {
     let config = PollConfig {
         targets: vec![target.clone()],
         interval,
-        owner: UserId::new("local-operator"),
-        worker: WorkerId::new("cli"),
+        owner: UserId::new("local-operator").expect("static test id"),
+        worker: WorkerId::new("cli").expect("static test id"),
     };
 
     let store_path_for_loop = store_path.clone();
@@ -213,8 +213,8 @@ async fn marker_present_from_a_prior_run_blocks_a_second_post_after_restart() {
     let config = PollConfig {
         targets: vec![target.clone()],
         interval,
-        owner: UserId::new("local-operator"),
-        worker: WorkerId::new("cli"),
+        owner: UserId::new("local-operator").expect("static test id"),
+        worker: WorkerId::new("cli").expect("static test id"),
     };
 
     let store_path_for_loop = store_path.clone();

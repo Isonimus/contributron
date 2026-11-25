@@ -67,7 +67,7 @@ async fn a_failed_reaction_is_retried_on_the_next_unchanged_tick() {
         targets: vec![target.clone()],
         interval,
         owner: owner.clone(),
-        worker: contributron_domain::actor::WorkerId::new("cli"),
+        worker: contributron_domain::actor::WorkerId::new("cli").expect("static test id"),
     };
 
     let store_path_for_loop = store_path.clone();

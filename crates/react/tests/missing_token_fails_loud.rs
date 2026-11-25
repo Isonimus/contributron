@@ -135,15 +135,17 @@ fn assert_credential_error(error: &ReactError) {
                 "error did not cite ADR-0013: {msg}",
             );
         }
-        ReactError::History(_) => panic!("expected provider error, got {error:?}"),
+        ReactError::History(_) | ReactError::Identity(_) => {
+            panic!("expected provider error, got {error:?}")
+        }
     }
 }
 
 #[tokio::test]
 async fn a_qualifying_transition_without_a_credential_fails_loud_and_posts_nothing() {
     let client = NoCredentialClient::default();
-    let owner = UserId::new("alice");
-    let worker = WorkerId::new("poll");
+    let owner = UserId::new("alice").expect("static test id");
+    let worker = WorkerId::new("poll").expect("static test id");
     let loc = locator();
     let prior = pr(2, 0);
     let new = pr(0, 2);
@@ -169,8 +171,8 @@ async fn a_non_qualifying_tick_without_a_credential_still_reports_not_applicable
     // qualifying transition, the transition check inside react() short-circuits before the
     // client is touched, so no credential is needed and no error is raised.
     let client = NoCredentialClient::default();
-    let owner = UserId::new("alice");
-    let worker = WorkerId::new("poll");
+    let owner = UserId::new("alice").expect("static test id");
+    let worker = WorkerId::new("poll").expect("static test id");
     let loc = locator();
 
     let outcome = react(&owner, &worker, &loc, None, &pr(0, 2), &client)
@@ -193,8 +195,8 @@ async fn a_non_qualifying_tick_without_a_credential_still_reports_not_applicable
 #[tokio::test]
 async fn apply_transition_without_a_credential_errors_before_any_label_mutation() {
     let client = NoCredentialClient::default();
-    let owner = UserId::new("alice");
-    let worker = WorkerId::new("poll");
+    let owner = UserId::new("alice").expect("static test id");
+    let worker = WorkerId::new("poll").expect("static test id");
     let loc = locator();
     let history = NoopHistory;
     let prior = pr_with_mergeable(Mergeable::Mergeable);
@@ -232,8 +234,8 @@ async fn remove_transition_without_a_credential_errors_before_any_label_mutation
     }
 
     let client = NoCredentialClient::default();
-    let owner = UserId::new("alice");
-    let worker = WorkerId::new("poll");
+    let owner = UserId::new("alice").expect("static test id");
+    let worker = WorkerId::new("poll").expect("static test id");
     let loc = locator();
     let history = HistoryConflicting;
     let prior = pr_with_mergeable(Mergeable::Conflicting);
@@ -261,8 +263,8 @@ async fn remove_transition_without_a_credential_errors_before_any_label_mutation
 #[tokio::test]
 async fn review_requested_without_a_credential_errors_before_any_write() {
     let client = NoCredentialClient::default();
-    let owner = UserId::new("alice");
-    let worker = WorkerId::new("poll");
+    let owner = UserId::new("alice").expect("static test id");
+    let worker = WorkerId::new("poll").expect("static test id");
     let loc = locator();
     let prior = pr_with_draft(true);
     let new = pr_with_draft(false);
@@ -295,8 +297,8 @@ async fn review_requested_without_a_credential_errors_before_any_write() {
 #[tokio::test]
 async fn review_requested_without_a_transition_does_not_touch_the_client() {
     let client = NoCredentialClient::default();
-    let owner = UserId::new("alice");
-    let worker = WorkerId::new("poll");
+    let owner = UserId::new("alice").expect("static test id");
+    let worker = WorkerId::new("poll").expect("static test id");
     let loc = locator();
     let new = pr_with_draft(false);
     let reviewers = vec![login("reviewer-one")];

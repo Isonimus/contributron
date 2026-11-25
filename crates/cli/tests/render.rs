@@ -49,7 +49,10 @@ fn one_open_pull_request() -> PullRequestObservation {
         ],
     );
     PullRequestObservation::new(
-        Attribution::local_operator(UserId::new("local-operator"), WorkerId::new("cli")),
+        Attribution::local_operator(
+            UserId::new("local-operator").expect("static test id"),
+            WorkerId::new("cli").expect("static test id"),
+        ),
         pull_request,
     )
 }
@@ -109,7 +112,10 @@ fn the_binary_renders_a_recorded_capture_exits_zero_and_repeats_byte_for_byte() 
 fn a_title_cannot_forge_a_line_or_reach_the_terminal() {
     let forged = "x\n#999 forged\n  unresolved threads: 0";
     let observation = PullRequestObservation::new(
-        Attribution::local_operator(UserId::new("local-operator"), WorkerId::new("cli")),
+        Attribution::local_operator(
+            UserId::new("local-operator").expect("static test id"),
+            WorkerId::new("cli").expect("static test id"),
+        ),
         ObservedPullRequest::new(
             PullRequestNumber::new(1).expect("one is a valid pull request number"),
             forged,
@@ -137,7 +143,10 @@ fn a_title_cannot_forge_a_line_or_reach_the_terminal() {
 
     let escape_sequence = "\u{1b}[2Jcleared";
     let observation = PullRequestObservation::new(
-        Attribution::local_operator(UserId::new("local-operator"), WorkerId::new("cli")),
+        Attribution::local_operator(
+            UserId::new("local-operator").expect("static test id"),
+            WorkerId::new("cli").expect("static test id"),
+        ),
         ObservedPullRequest::new(
             PullRequestNumber::new(2).expect("two is a valid pull request number"),
             escape_sequence,

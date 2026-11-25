@@ -28,7 +28,7 @@ async fn ten_ticks_of_unchanged_state_yield_one_fresh_and_nine_unchanged() {
         targets: vec![target.clone()],
         interval,
         owner: owner.clone(),
-        worker: contributron_domain::actor::WorkerId::new("cli"),
+        worker: contributron_domain::actor::WorkerId::new("cli").expect("static test id"),
     };
 
     let store_path_for_loop = store_path.clone();

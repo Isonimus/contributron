@@ -22,10 +22,10 @@ use contributron_react::{
 
 fn attribution(agent_id: &str) -> Attribution {
     Attribution {
-        user: UserId::new("alice"),
-        worker: WorkerId::new("poll"),
+        user: UserId::new("alice").expect("static test id"),
+        worker: WorkerId::new("poll").expect("static test id"),
         agent: ExecutingAgent::Agent {
-            id: AgentId::new(agent_id),
+            id: AgentId::new(agent_id).expect("static test id"),
         },
     }
 }

@@ -56,8 +56,8 @@ fn subject(threads: Vec<ReviewThread>) -> ObservedPullRequest {
 
 fn observation(pull_request: ObservedPullRequest, agent: ExecutingAgent) -> PullRequestObservation {
     let attribution = Attribution {
-        user: UserId::new("local-operator"),
-        worker: WorkerId::new("cli"),
+        user: UserId::new("local-operator").expect("static test id"),
+        worker: WorkerId::new("cli").expect("static test id"),
         agent,
     };
     PullRequestObservation::new(attribution, pull_request)
@@ -92,7 +92,7 @@ fn the_same_content_observed_by_a_different_actor_has_the_same_identity() {
     let by_agent = observation(
         subject(vec![thread("T1", ThreadResolution::Unresolved)]),
         ExecutingAgent::Agent {
-            id: AgentId::new("reviewer-1"),
+            id: AgentId::new("reviewer-1").expect("static test id"),
         },
     );
 

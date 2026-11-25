@@ -49,10 +49,11 @@ impl AuthorLogin {
     /// no name is a normalization failure, not an anonymous author.
     pub fn new(value: impl Into<String>) -> Result<Self, EmptyAuthorLogin> {
         let value = value.into();
-        if value.trim().is_empty() {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
             Err(EmptyAuthorLogin)
         } else {
-            Ok(Self(value))
+            Ok(Self(trimmed.to_owned()))
         }
     }
 

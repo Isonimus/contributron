@@ -87,6 +87,11 @@ pub enum PollError {
     /// top-level loop surfaces a panic rather than silently drops the target it came from.
     #[error("a polling task joined with a panic: {0}")]
     TaskJoined(String),
+    /// A newtype constructor rejected an empty or whitespace-only identity. Surfaces at the
+    /// loop layer so a bad `PollConfig.worker` is caught at startup rather than silently
+    /// collapsing into an empty-string column.
+    #[error("identity: {0}")]
+    Identity(#[from] contributron_domain::actor::EmptyId),
 }
 
 /// What happened on one tick, reported in order on the channel [`run_loop`] drains to.
@@ -661,13 +666,18 @@ fn persist_reactions(
         }
     };
     for agent_id in agent_ids {
+        let agent = match AgentId::new(agent_id) {
+            Ok(a) => a,
+            Err(e) => {
+                errors.push((agent_id.clone(), e.to_string()));
+                continue;
+            }
+        };
         let record = ReactionRecord {
             attribution: Attribution {
                 user: owner.clone(),
                 worker: worker.clone(),
-                agent: ExecutingAgent::Agent {
-                    id: AgentId::new(agent_id),
-                },
+                agent: ExecutingAgent::Agent { id: agent },
             },
             pr_owner: locator.owner.clone(),
             pr_repo: locator.repo.clone(),
@@ -751,9 +761,13 @@ fn apply_fetch_to_store(
 ) -> StepAfterWrite {
     match fetch_result {
         Ok(observed) => {
+            let worker_id = match WorkerId::new(POLL_WORKER) {
+                Ok(w) => w,
+                Err(e) => return StepAfterWrite::StoreFailed(e.to_string()),
+            };
             let attribution = Attribution {
                 user: owner.clone(),
-                worker: WorkerId::new(POLL_WORKER),
+                worker: worker_id,
                 agent: ExecutingAgent::NoAgent,
             };
             let observation = PullRequestObservation::new(attribution, observed.clone());
@@ -825,7 +839,7 @@ pub async fn poll_once(
         Ok(observed) => {
             let attribution = Attribution {
                 user: owner.clone(),
-                worker: WorkerId::new(worker),
+                worker: WorkerId::new(worker)?,
                 agent: ExecutingAgent::NoAgent,
             };
             let observation = PullRequestObservation::new(attribution, observed);

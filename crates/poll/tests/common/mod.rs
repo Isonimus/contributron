@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 pub(crate) fn user(name: &str) -> UserId {
-    UserId::new(name)
+    UserId::new(name).expect("test value")
 }
 
 pub(crate) fn locator(owner: &str, repo: &str, number: u64) -> PullRequestLocator {

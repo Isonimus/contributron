@@ -24,10 +24,10 @@ use contributron_react::{
 };
 
 fn owner() -> UserId {
-    UserId::new("alice")
+    UserId::new("alice").expect("static test id")
 }
 fn worker() -> WorkerId {
-    WorkerId::new("poll")
+    WorkerId::new("poll").expect("static test id")
 }
 
 /// Scenario 1: a stored `Conflicting → Mergeable` transition with a clean live read posts

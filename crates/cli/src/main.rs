@@ -150,7 +150,7 @@ fn record_to_store(capture: &Path, store_path: &Path) -> Result<()> {
             Box::pin(async move { Ok(o) }) as FetchFuture
         })
     };
-    let owner = UserId::new(LOCAL_USER);
+    let owner = UserId::new(LOCAL_USER)?;
     let store = EventStore::open(store_path, owner.clone())
         .with_context(|| format!("opening the store at {}", store_path.display()))?;
     // The locator is a placeholder because `record` reads a file rather than a target: the
@@ -182,7 +182,7 @@ fn record_to_store(capture: &Path, store_path: &Path) -> Result<()> {
 }
 
 fn list_from_store(path: &Path) -> Result<()> {
-    let store = EventStore::open(path, UserId::new(LOCAL_USER))
+    let store = EventStore::open(path, UserId::new(LOCAL_USER)?)
         .with_context(|| format!("opening the store at {}", path.display()))?;
     let observations = store
         .list()
@@ -200,7 +200,7 @@ fn render(capture: &Path) -> Result<()> {
     let pull_request = normalize_capture(&raw)
         .with_context(|| format!("normalizing the capture at {}", capture.display()))?;
     let attribution =
-        Attribution::local_operator(UserId::new(LOCAL_USER), WorkerId::new(CLI_WORKER));
+        Attribution::local_operator(UserId::new(LOCAL_USER)?, WorkerId::new(CLI_WORKER)?);
     let observation = PullRequestObservation::new(attribution, pull_request);
     print!("{}", render_state(&[observation]));
     Ok(())
@@ -242,12 +242,12 @@ fn run_watch(
     let interval = validate_interval_secs(interval_secs)?;
     let reviewers = resolve_reviewers(reviewers)?;
 
-    let owner = UserId::new(LOCAL_USER);
+    let owner = UserId::new(LOCAL_USER)?;
     let config = PollConfig {
         targets,
         interval,
         owner: owner.clone(),
-        worker: WorkerId::new("cli"),
+        worker: WorkerId::new(CLI_WORKER)?,
     };
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -360,7 +360,7 @@ fn build_reactor(
         ),
         None => Arc::new(MissingTokenClient),
     };
-    let worker = WorkerId::new(CLI_WORKER);
+    let worker = WorkerId::new(CLI_WORKER)?;
     let mergeable_history: Arc<dyn MergeableHistory> = Arc::new(StoreMergeableHistory {
         store_path,
         owner: owner.clone(),

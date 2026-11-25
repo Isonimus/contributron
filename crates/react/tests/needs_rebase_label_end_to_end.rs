@@ -71,8 +71,8 @@ fn scripted_fetch(script: Vec<Result<ObservedPullRequest, &'static str>>) -> Fet
 }
 
 fn reactor_from(client: Arc<FakeClient>) -> Reactor {
-    let owner = UserId::new("local-operator");
-    let worker = WorkerId::new("cli");
+    let owner = UserId::new("local-operator").expect("static test id");
+    let worker = WorkerId::new("cli").expect("static test id");
     Arc::new(move |locator, prior, new| {
         let client = Arc::clone(&client);
         let owner = owner.clone();
@@ -135,8 +135,8 @@ async fn conflict_cycle_applies_then_removes_across_two_ticks() {
     let config = PollConfig {
         targets: vec![target.clone()],
         interval,
-        owner: UserId::new("local-operator"),
-        worker: WorkerId::new("cli"),
+        owner: UserId::new("local-operator").expect("static test id"),
+        worker: WorkerId::new("cli").expect("static test id"),
     };
 
     let store_path_for_loop = store_path.clone();
@@ -226,8 +226,8 @@ async fn live_label_set_matches_rule_state_after_restart() {
     let config = PollConfig {
         targets: vec![target.clone()],
         interval,
-        owner: UserId::new("local-operator"),
-        worker: WorkerId::new("cli"),
+        owner: UserId::new("local-operator").expect("static test id"),
+        worker: WorkerId::new("cli").expect("static test id"),
     };
 
     let store_path_for_loop = store_path.clone();

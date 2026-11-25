@@ -30,7 +30,7 @@ async fn two_targets_on_the_same_interval_are_each_polled_the_same_number_of_tim
         targets: vec![target_a.clone(), target_b.clone()],
         interval,
         owner: owner.clone(),
-        worker: contributron_domain::actor::WorkerId::new("cli"),
+        worker: contributron_domain::actor::WorkerId::new("cli").expect("static test id"),
     };
 
     let store_path_for_loop = store_path.clone();

@@ -11,8 +11,8 @@ use contributron_react::{RULE_MARKER, ReactionOutcome, react};
 #[tokio::test]
 async fn transition_from_two_unresolved_to_zero_posts_once_with_marker() {
     let client = FakeClient::default();
-    let owner = UserId::new("alice");
-    let worker = WorkerId::new("poll");
+    let owner = UserId::new("alice").expect("static test id");
+    let worker = WorkerId::new("poll").expect("static test id");
     let loc = locator();
     let prior = pr(2, 0);
     let new = pr(0, 2);

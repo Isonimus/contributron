@@ -42,7 +42,7 @@ async fn a_changed_observation_between_ticks_produces_a_second_row() {
         targets: vec![target.clone()],
         interval,
         owner: owner.clone(),
-        worker: WorkerId::new("cli"),
+        worker: WorkerId::new("cli").expect("static test id"),
     };
 
     let store_path_for_loop = store_path.clone();
@@ -82,8 +82,11 @@ async fn a_changed_observation_between_ticks_produces_a_second_row() {
     );
 
     // Verify the store holds two rows, not one.
-    let store =
-        EventStore::open(&store_path, UserId::new("local-operator")).expect("store reopens");
+    let store = EventStore::open(
+        &store_path,
+        UserId::new("local-operator").expect("static test id"),
+    )
+    .expect("store reopens");
     let rows = store.list().expect("list");
     assert_eq!(rows.len(), 2, "two distinct observations persisted");
     let titles: Vec<&str> = rows.iter().map(|o| o.pull_request.title.as_str()).collect();

@@ -21,8 +21,8 @@ async fn an_existing_marker_comment_prevents_a_second_post() {
     // *would* otherwise qualify.
     let existing_body = format!("{RULE_MARKER}\nFrom the previous reactor run.");
     let client = FakeClient::with_existing([existing_body]);
-    let owner = UserId::new("alice");
-    let worker = WorkerId::new("poll");
+    let owner = UserId::new("alice").expect("static test id");
+    let worker = WorkerId::new("poll").expect("static test id");
     let loc = locator();
 
     let outcome = react(&owner, &worker, &loc, Some(&pr(1, 0)), &pr(0, 1), &client)
@@ -41,8 +41,8 @@ async fn an_existing_marker_comment_prevents_a_second_post() {
 async fn a_second_react_call_in_the_same_process_does_not_double_post() {
     // The fake records a post into its own `existing` list, so a repeated call sees it.
     let client = FakeClient::default();
-    let owner = UserId::new("alice");
-    let worker = WorkerId::new("poll");
+    let owner = UserId::new("alice").expect("static test id");
+    let worker = WorkerId::new("poll").expect("static test id");
     let loc = locator();
 
     react(&owner, &worker, &loc, Some(&pr(2, 0)), &pr(0, 2), &client)

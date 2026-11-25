@@ -10,7 +10,7 @@ use contributron_domain::pull_request::{
 };
 
 pub(crate) fn user(name: &str) -> UserId {
-    UserId::new(name)
+    UserId::new(name).expect("test value")
 }
 
 pub(crate) fn observation(
@@ -20,7 +20,10 @@ pub(crate) fn observation(
     title: &str,
 ) -> PullRequestObservation {
     PullRequestObservation::new(
-        Attribution::local_operator(UserId::new(owner), WorkerId::new("cli")),
+        Attribution::local_operator(
+            UserId::new(owner).expect("test user"),
+            WorkerId::new("cli").expect("static test id"),
+        ),
         ObservedPullRequest::new(
             PullRequestNumber::new(number).expect("non-zero pull request number"),
             title,

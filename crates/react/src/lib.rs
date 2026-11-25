@@ -285,6 +285,11 @@ pub enum ReactError {
     /// 2026-11-25 review).
     #[error("history: {0}")]
     History(String),
+    /// A built-in rule agent id failed the newtype validation. Not reachable in practice
+    /// (all rule agent ids are compile-time constants), but the variant exists so the
+    /// fail-loud quality bar holds without an `.expect` at the call site.
+    #[error("identity: {0}")]
+    Identity(#[from] contributron_domain::actor::EmptyId),
 }
 
 /// Access to settled prior mergeable observations past the immediate `prior` the poll
@@ -304,14 +309,18 @@ pub trait MergeableHistory: Send + Sync {
 }
 
 /// Build the standard three-identity [`Attribution`] a rule records with every write.
-fn attribution_for(owner: &UserId, worker: &WorkerId, agent_id: &str) -> Attribution {
-    Attribution {
+fn attribution_for(
+    owner: &UserId,
+    worker: &WorkerId,
+    agent_id: &str,
+) -> Result<Attribution, ReactError> {
+    Ok(Attribution {
         user: owner.clone(),
         worker: worker.clone(),
         agent: ExecutingAgent::Agent {
-            id: AgentId::new(agent_id),
+            id: AgentId::new(agent_id)?,
         },
-    }
+    })
 }
 
 /// Examines a pair of observations and decides whether to react (slice 0014).
@@ -350,7 +359,7 @@ pub async fn react(
 
     Ok(ReactionOutcome::Posted {
         receipt: ReactionReceipt {
-            attribution: attribution_for(owner, worker, RULE_AGENT_ID),
+            attribution: attribution_for(owner, worker, RULE_AGENT_ID)?,
             kind: ReactionKind::Commented { body: comment.body },
         },
     })
@@ -402,7 +411,7 @@ pub async fn react_merge_conflicts_cleared(
 
     Ok(ReactionOutcome::Posted {
         receipt: ReactionReceipt {
-            attribution: attribution_for(owner, worker, MERGE_RULE_AGENT_ID),
+            attribution: attribution_for(owner, worker, MERGE_RULE_AGENT_ID)?,
             kind: ReactionKind::Commented { body: comment.body },
         },
     })
@@ -495,7 +504,7 @@ pub async fn react_needs_rebase_label(
             client.add_label(locator, &label).await?;
             Ok(ReactionOutcome::Posted {
                 receipt: ReactionReceipt {
-                    attribution: attribution_for(owner, worker, LABEL_RULE_AGENT_ID),
+                    attribution: attribution_for(owner, worker, LABEL_RULE_AGENT_ID)?,
                     kind: ReactionKind::LabelApplied { label },
                 },
             })
@@ -507,7 +516,7 @@ pub async fn react_needs_rebase_label(
             client.remove_label(locator, &label).await?;
             Ok(ReactionOutcome::Posted {
                 receipt: ReactionReceipt {
-                    attribution: attribution_for(owner, worker, LABEL_RULE_AGENT_ID),
+                    attribution: attribution_for(owner, worker, LABEL_RULE_AGENT_ID)?,
                     kind: ReactionKind::LabelRemoved { label },
                 },
             })
@@ -601,7 +610,7 @@ pub async fn react_review_requested(
     client.request_reviewers(locator, &missing).await?;
     Ok(ReactionOutcome::Posted {
         receipt: ReactionReceipt {
-            attribution: attribution_for(owner, worker, REVIEW_REQUESTED_RULE_AGENT_ID),
+            attribution: attribution_for(owner, worker, REVIEW_REQUESTED_RULE_AGENT_ID)?,
             kind: ReactionKind::ReviewRequested { reviewers: missing },
         },
     })

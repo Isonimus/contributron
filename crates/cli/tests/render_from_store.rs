@@ -42,13 +42,19 @@ fn render_from_the_store_matches_the_capture_based_render() {
     // CLI uses on this capture ("local-operator").
     let raw = std::fs::read_to_string(&capture_path).expect("read fixture");
     let pull_request = normalize_capture(&raw).expect("normalize");
-    let attribution =
-        Attribution::local_operator(UserId::new("local-operator"), WorkerId::new("cli"));
+    let attribution = Attribution::local_operator(
+        UserId::new("local-operator").expect("static test id"),
+        WorkerId::new("cli").expect("static test id"),
+    );
     let observation = PullRequestObservation::new(attribution, pull_request);
 
     let tmp = TempDir::new().expect("temporary directory");
     let store_path = tmp.path().join("events.sqlite3");
-    let store = EventStore::open(&store_path, UserId::new("local-operator")).expect("open");
+    let store = EventStore::open(
+        &store_path,
+        UserId::new("local-operator").expect("static test id"),
+    )
+    .expect("open");
     assert_eq!(
         store.write(&observation).expect("write"),
         WriteOutcome::Fresh

@@ -59,14 +59,6 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
   verifiable by the provider rather than asserted by our own audit record. Cheap, and it
   converts part of invariant 6 from review-only into something a third party can check
   (ADR-0005).
-- [bug] `UserId::new`, `WorkerId::new` and `AgentId::new` accept the empty string. The three
-  newtypes are declared by the `string_id!` macro in `crates/domain/src/actor.rs`, which does
-  no validation, so a persisted row can carry `owner_user=''`, `worker=''` or `agent_id=''`.
-  The store's NOT NULL columns accept `''`, and the write path's owner check compares two
-  possibly-empty strings. Invariant 6 says every operation names all three identities; an
-  empty name is a boundary-validation gap, not a corruption bug. Found by the 2026-11-24
-  adversarial review of slice 0009. Fix: validate at the constructor the way `AuthorLogin`
-  and `ThreadId` already do (ADR-0005).
 - [feature] Second SIGINT and in-flight fetch cancellation for `contributron watch`. The
   shutdown task awaits `tokio::signal::ctrl_c()` once and exits, so a second Ctrl-C is a
   no-op; and the per-target task does not cancel its in-flight fetch, so a stalled HTTP
@@ -145,13 +137,6 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
   escalate the locator (e.g. a `Failed` ledger entry on the persisted reaction row, slice
   TBD) or back off exponentially instead of the fixed per-target interval. Found by the
   2026-11-25 adversarial review of slice 0017 (finding 1) (ADR-0012).
-- [bug] `AuthorLogin::new` rejects whitespace-only input but stores the untrimmed value, so
-  `" alice"` passes validation and is sent to the provider with its leading space. The
-  slice 0017 CLI boundary now trims `--reviewer` entries as a workaround, but the right
-  fix is to store `value.trim().to_owned()` at the newtype constructor so every call site
-  is covered. Same shape as the ledgered `UserId`/`WorkerId`/`AgentId` empty-string
-  boundary gap. Found by the 2026-11-25 adversarial review of slice 0017 (finding 4)
-  (ADR-0005).
 - [feature] Paginate `reviewThreads`. A capture reads the first 100 threads
   (`THREAD_PAGE_SIZE` in `crates/github/src/capture.rs`), and a pull request with more cannot
   be observed at all: the normalizer refuses a payload whose `pageInfo.hasNextPage` is true

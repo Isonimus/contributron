@@ -27,7 +27,7 @@ use tokio::sync::{mpsc, watch};
 async fn watch_then_list_renders_the_stubbed_observation() {
     let tmp = TempDir::new().expect("a temporary directory");
     let store_path = tmp.path().join("events.sqlite3");
-    let owner = UserId::new("local-operator");
+    let owner = UserId::new("local-operator").expect("static test id");
     let target = PullRequestLocator {
         owner: "alice".into(),
         repo: "project".into(),
@@ -60,7 +60,7 @@ async fn watch_then_list_renders_the_stubbed_observation() {
         targets: vec![target.clone()],
         interval,
         owner: owner.clone(),
-        worker: contributron_domain::actor::WorkerId::new("cli"),
+        worker: contributron_domain::actor::WorkerId::new("cli").expect("static test id"),
     };
 
     let store_path_for_loop = store_path.clone();

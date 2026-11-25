@@ -60,7 +60,7 @@ async fn cancellation_mid_fetch_drains_the_in_flight_poll_and_exits() {
         targets: vec![target.clone()],
         interval,
         owner: owner.clone(),
-        worker: contributron_domain::actor::WorkerId::new("cli"),
+        worker: contributron_domain::actor::WorkerId::new("cli").expect("static test id"),
     };
 
     let store_path_for_loop = store_path.clone();

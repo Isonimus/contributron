@@ -45,7 +45,7 @@ fn resolve_optional_with_no_flag_and_no_env_returns_none() {
 fn list_renders_the_store_without_touching_any_credential_source() {
     let tmp = TempDir::new().expect("a temporary directory");
     let store_path = tmp.path().join("events.sqlite3");
-    let owner = UserId::new("local-operator");
+    let owner = UserId::new("local-operator").expect("static test id");
 
     let observed = ObservedPullRequest::new(
         PullRequestNumber::new(7).expect("nonzero number"),
@@ -57,7 +57,8 @@ fn list_renders_the_store_without_touching_any_credential_source() {
         Mergeable::Unknown,
         Vec::new(),
     );
-    let attribution = Attribution::local_operator(owner.clone(), WorkerId::new("cli"));
+    let attribution =
+        Attribution::local_operator(owner.clone(), WorkerId::new("cli").expect("static test id"));
     let observation = PullRequestObservation::new(attribution, observed);
 
     {

@@ -103,6 +103,28 @@ pub enum StoreError {
         /// The unrecognised column value.
         value: i64,
     },
+    /// A row read back from the store held an empty identity column where invariant 6
+    /// requires a non-empty value. Surfaces the specific column so a corrupted file does
+    /// not propagate silently through the newtype constructor.
+    #[error("stored row has empty identity column {column:?}")]
+    IdentityEmpty {
+        /// The column name whose value was empty.
+        column: &'static str,
+    },
+}
+
+impl From<contributron_domain::actor::EmptyId> for StoreError {
+    fn from(err: contributron_domain::actor::EmptyId) -> Self {
+        Self::IdentityEmpty { column: err.kind }
+    }
+}
+
+impl From<contributron_domain::pull_request::EmptyAuthorLogin> for StoreError {
+    fn from(_: contributron_domain::pull_request::EmptyAuthorLogin) -> Self {
+        Self::IdentityEmpty {
+            column: "author login",
+        }
+    }
 }
 
 /// SQLite's extended result code for a primary key conflict. Matched by number rather than
@@ -583,10 +605,10 @@ fn decode_reaction(columns: StoredReactionColumns) -> Result<StoredReaction, Sto
         value: columns.pr_number,
     })?;
     let attribution = Attribution {
-        user: UserId::new(columns.owner),
-        worker: WorkerId::new(columns.worker),
+        user: UserId::new(columns.owner)?,
+        worker: WorkerId::new(columns.worker)?,
         agent: ExecutingAgent::Agent {
-            id: contributron_domain::actor::AgentId::new(columns.agent_id),
+            id: contributron_domain::actor::AgentId::new(columns.agent_id)?,
         },
     };
     Ok(StoredReaction {
@@ -646,8 +668,8 @@ fn decode_from_strings(columns: StoredColumns) -> Result<PullRequestObservation,
     let pull_request: ObservedPullRequest = serde_json::from_str(&columns.payload_json)?;
     let agent: ExecutingAgent = serde_json::from_str(&columns.agent_json)?;
     let attribution = Attribution {
-        user: UserId::new(columns.owner),
-        worker: WorkerId::new(columns.worker),
+        user: UserId::new(columns.owner)?,
+        worker: WorkerId::new(columns.worker)?,
         agent,
     };
     Ok(PullRequestObservation::new(attribution, pull_request))

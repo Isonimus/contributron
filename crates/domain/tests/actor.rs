@@ -8,8 +8,8 @@ use serde_json::Value;
 
 fn record(agent: ExecutingAgent) -> Value {
     let attribution = Attribution {
-        user: UserId::new("local-operator"),
-        worker: WorkerId::new("cli"),
+        user: UserId::new("local-operator").expect("static test id"),
+        worker: WorkerId::new("cli").expect("static test id"),
         agent,
     };
     serde_json::to_value(&attribution).expect("an attribution serializes")
@@ -38,7 +38,7 @@ fn an_operation_with_no_agent_says_so_rather_than_omitting_the_field() {
 #[test]
 fn an_operation_an_agent_performed_names_that_agent() {
     let value = record(ExecutingAgent::Agent {
-        id: AgentId::new("reviewer-1"),
+        id: AgentId::new("reviewer-1").expect("static test id"),
     });
 
     assert_eq!(value["agent"]["kind"], "agent");
@@ -53,7 +53,7 @@ fn the_two_records_are_distinguishable() {
     assert_ne!(
         record(ExecutingAgent::NoAgent),
         record(ExecutingAgent::Agent {
-            id: AgentId::new("reviewer-1")
+            id: AgentId::new("reviewer-1").expect("static test id")
         })
     );
 }

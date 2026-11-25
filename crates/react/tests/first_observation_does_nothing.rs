@@ -17,8 +17,8 @@ use contributron_react::{ReactionOutcome, react};
 #[tokio::test]
 async fn first_observation_with_zero_unresolved_does_not_post() {
     let client = FakeClient::default();
-    let owner = UserId::new("alice");
-    let worker = WorkerId::new("poll");
+    let owner = UserId::new("alice").expect("static test id");
+    let worker = WorkerId::new("poll").expect("static test id");
     let loc = locator();
 
     let outcome = react(&owner, &worker, &loc, None, &pr(0, 0), &client)

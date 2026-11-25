@@ -23,10 +23,10 @@ fn a_second_write_of_the_same_observation_is_a_duplicate_and_retains_the_first_a
     let original = observation("owner", "someone", 1, "same title");
     let second_poll = PullRequestObservation::new(
         Attribution {
-            user: UserId::new("owner"),
-            worker: WorkerId::new("a-different-worker"),
+            user: UserId::new("owner").expect("static test id"),
+            worker: WorkerId::new("a-different-worker").expect("static test id"),
             agent: ExecutingAgent::Agent {
-                id: AgentId::new("claude-code"),
+                id: AgentId::new("claude-code").expect("static test id"),
             },
         },
         original.pull_request.clone(),

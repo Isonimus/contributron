@@ -33,7 +33,7 @@ async fn one_transient_error_backs_off_and_the_loop_recovers_on_the_next_call() 
         targets: vec![target.clone()],
         interval,
         owner: owner.clone(),
-        worker: contributron_domain::actor::WorkerId::new("cli"),
+        worker: contributron_domain::actor::WorkerId::new("cli").expect("static test id"),
     };
 
     let store_path_for_loop = store_path.clone();
@@ -72,8 +72,11 @@ async fn one_transient_error_backs_off_and_the_loop_recovers_on_the_next_call() 
         .expect("loop joined without panic")
         .expect("loop returned Ok");
 
-    let store =
-        EventStore::open(&store_path, UserId::new("local-operator")).expect("store reopens");
+    let store = EventStore::open(
+        &store_path,
+        UserId::new("local-operator").expect("static test id"),
+    )
+    .expect("store reopens");
     let rows = store.list().expect("list");
     assert_eq!(rows.len(), 1, "exactly one row (the successful call)");
     assert_eq!(rows[0].pull_request.title, "recovery");

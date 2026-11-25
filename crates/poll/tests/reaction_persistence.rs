@@ -46,7 +46,7 @@ async fn posted_tick_persists_one_row_per_agent_id() {
         targets: vec![target.clone()],
         interval,
         owner: owner.clone(),
-        worker: WorkerId::new("cli"),
+        worker: WorkerId::new("cli").expect("static test id"),
     };
 
     let store_path_for_loop = store_path.clone();
@@ -123,7 +123,7 @@ async fn already_settled_tick_persists_one_row_with_the_matching_outcome() {
         targets: vec![target.clone()],
         interval,
         owner: owner.clone(),
-        worker: WorkerId::new("cli"),
+        worker: WorkerId::new("cli").expect("static test id"),
     };
 
     let store_path_for_loop = store_path.clone();
@@ -175,7 +175,7 @@ async fn not_applicable_and_failed_ticks_write_nothing() {
             targets: vec![target.clone()],
             interval,
             owner: owner.clone(),
-            worker: WorkerId::new("cli"),
+            worker: WorkerId::new("cli").expect("static test id"),
         };
 
         let store_path_for_loop = store_path.clone();

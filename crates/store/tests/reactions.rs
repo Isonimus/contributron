@@ -28,10 +28,10 @@ fn record(
 ) -> ReactionRecord {
     ReactionRecord {
         attribution: Attribution {
-            user: UserId::new(owner),
-            worker: WorkerId::new("cli"),
+            user: UserId::new(owner).expect("test user"),
+            worker: WorkerId::new("cli").expect("static test id"),
             agent: ExecutingAgent::Agent {
-                id: AgentId::new(agent_id),
+                id: AgentId::new(agent_id).expect("test agent"),
             },
         },
         pr_owner: "octo-org".to_owned(),
@@ -182,8 +182,8 @@ fn a_reaction_with_no_agent_id_is_refused() {
     let event_id = obs.event_id().expect("event id");
     let row = ReactionRecord {
         attribution: Attribution {
-            user: UserId::new("owner"),
-            worker: WorkerId::new("cli"),
+            user: UserId::new("owner").expect("static test id"),
+            worker: WorkerId::new("cli").expect("static test id"),
             agent: ExecutingAgent::NoAgent,
         },
         pr_owner: "octo-org".to_owned(),

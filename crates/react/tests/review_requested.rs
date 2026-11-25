@@ -29,7 +29,10 @@ use contributron_react::{
 };
 
 fn owner_worker() -> (UserId, WorkerId) {
-    (UserId::new("alice"), WorkerId::new("poll"))
+    (
+        UserId::new("alice").expect("static test id"),
+        WorkerId::new("poll").expect("static test id"),
+    )
 }
 
 #[tokio::test]
