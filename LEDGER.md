@@ -131,6 +131,12 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
   literal, so a mispadded sibling label does not currently cause a misclassification.
   Fix: propagate a `NormalizeError` the way review-thread normalization does. Found by the
   2026-11-25 adversarial review of slice 0016 (finding 3) (ADR-0001).
+- [bug] `chrono` 0.4 is unmaintained (RUSTSEC-2026-0543). Transitive through the dependency
+  graph; `cargo audit` surfaces it on every run. No functional impact yet, but the advisory
+  will remain noisy until the dependency is replaced or pinned to a maintained fork. Track
+  the upstream status and either migrate to `jiff` (the sibling-crate replacement the
+  advisory points at) or wait for the ecosystem to migrate transitively. Imported from the
+  GitHub-issue tracker on 2026-11-25 under ADR-0018 (ADR-0018).
 - [feature] Paginate `reviewThreads`. A capture reads the first 100 threads
   (`THREAD_PAGE_SIZE` in `crates/github/src/capture.rs`), and a pull request with more cannot
   be observed at all: the normalizer refuses a payload whose `pageInfo.hasNextPage` is true
