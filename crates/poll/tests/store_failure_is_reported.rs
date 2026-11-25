@@ -43,6 +43,7 @@ async fn a_store_open_failure_is_reported_on_the_event_channel_not_silently_retu
         targets: vec![target.clone()],
         interval,
         owner: owner.clone(),
+        worker: contributron_domain::actor::WorkerId::new("cli"),
     };
 
     let store_path_for_loop = store_path.clone();

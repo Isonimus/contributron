@@ -61,6 +61,7 @@ async fn the_reactor_receives_the_prior_from_the_previous_fresh_tick() {
         targets: vec![target.clone()],
         interval,
         owner: owner.clone(),
+        worker: contributron_domain::actor::WorkerId::new("cli"),
     };
 
     let store_path_for_loop = store_path.clone();

@@ -136,6 +136,7 @@ async fn draft_to_ready_transition_requests_the_configured_reviewers() {
         targets: vec![target.clone()],
         interval,
         owner: UserId::new("local-operator"),
+        worker: WorkerId::new("cli"),
     };
 
     let store_path_for_loop = store_path.clone();
@@ -312,6 +313,7 @@ async fn draft_to_ready_without_a_credential_surfaces_the_adr_0013_error() {
         targets: vec![target.clone()],
         interval,
         owner: UserId::new("local-operator"),
+        worker: WorkerId::new("cli"),
     };
 
     let store_path_for_loop = store_path.clone();

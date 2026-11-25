@@ -247,6 +247,7 @@ fn run_watch(
         targets,
         interval,
         owner: owner.clone(),
+        worker: WorkerId::new("cli"),
     };
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -596,6 +597,19 @@ fn report_tick(tick: &Tick) {
         },
     }
     report_reaction(tick);
+    report_persist_errors(tick);
+}
+
+/// Reports reaction-persist failures (slice 0019). The provider write already landed; the
+/// audit record did not. Printed to stderr so it does not mix with the structured
+/// tick-outcome line, and named with a distinct prefix so `grep` can surface it.
+fn report_persist_errors(tick: &Tick) {
+    for (agent_id, message) in &tick.persist_errors {
+        eprintln!(
+            "reaction-persist-error {} ({}): {}",
+            tick.locator, agent_id, message,
+        );
+    }
 }
 
 fn report_reaction(tick: &Tick) {

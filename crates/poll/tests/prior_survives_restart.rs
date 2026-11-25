@@ -66,6 +66,7 @@ async fn the_first_fresh_tick_sees_the_store_prior() {
         targets: vec![target.clone()],
         interval,
         owner: owner.clone(),
+        worker: WorkerId::new("cli"),
     };
 
     let store_path_for_loop = store_path.clone();

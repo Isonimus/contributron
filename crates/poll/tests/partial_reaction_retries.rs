@@ -80,6 +80,7 @@ async fn a_partial_reaction_is_retried_on_the_next_unchanged_tick() {
         targets: vec![target.clone()],
         interval,
         owner: owner.clone(),
+        worker: contributron_domain::actor::WorkerId::new("cli"),
     };
 
     let store_path_for_loop = store_path.clone();

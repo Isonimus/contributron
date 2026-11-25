@@ -33,6 +33,7 @@ async fn one_transient_error_backs_off_and_the_loop_recovers_on_the_next_call() 
         targets: vec![target.clone()],
         interval,
         owner: owner.clone(),
+        worker: contributron_domain::actor::WorkerId::new("cli"),
     };
 
     let store_path_for_loop = store_path.clone();

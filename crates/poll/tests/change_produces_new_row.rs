@@ -6,7 +6,7 @@
 mod common;
 
 use common::{locator, observation, scripted_fetch, user};
-use contributron_domain::actor::UserId;
+use contributron_domain::actor::{UserId, WorkerId};
 use contributron_poll::{PollConfig, Tick, TickOutcome, run_loop};
 use contributron_store::EventStore;
 use std::time::Duration;
@@ -42,6 +42,7 @@ async fn a_changed_observation_between_ticks_produces_a_second_row() {
         targets: vec![target.clone()],
         interval,
         owner: owner.clone(),
+        worker: WorkerId::new("cli"),
     };
 
     let store_path_for_loop = store_path.clone();

@@ -60,6 +60,7 @@ async fn watch_then_list_renders_the_stubbed_observation() {
         targets: vec![target.clone()],
         interval,
         owner: owner.clone(),
+        worker: contributron_domain::actor::WorkerId::new("cli"),
     };
 
     let store_path_for_loop = store_path.clone();

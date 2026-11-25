@@ -133,6 +133,7 @@ async fn conflict_then_mergeable_posts_once_then_unchanged_posts_nothing() {
         targets: vec![target.clone()],
         interval,
         owner: UserId::new("local-operator"),
+        worker: WorkerId::new("cli"),
     };
 
     let store_path_for_loop = store_path.clone();
@@ -213,6 +214,7 @@ async fn marker_present_from_a_prior_run_blocks_a_second_post_after_restart() {
         targets: vec![target.clone()],
         interval,
         owner: UserId::new("local-operator"),
+        worker: WorkerId::new("cli"),
     };
 
     let store_path_for_loop = store_path.clone();

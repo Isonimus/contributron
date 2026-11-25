@@ -15,6 +15,7 @@ use contributron_domain::actor::{Attribution, ExecutingAgent, UserId, WorkerId};
 use contributron_domain::event::{CanonicalEncodingError, EventId, PullRequestObservation};
 use contributron_domain::pull_request::ObservedPullRequest;
 use rusqlite::{Connection, OptionalExtension, Row, params};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -84,6 +85,24 @@ pub enum StoreError {
         /// What the file's `user_version` reported.
         found: i32,
     },
+    /// A [`ReactionRecord`] carried a `NoAgent` attribution. Invariant 6 requires every
+    /// recorded operation to name all three identities; a reaction with no agent cannot
+    /// be stored.
+    #[error("reaction record has no agent id (invariant 6 requires one)")]
+    MissingAgentId,
+    /// A stored reaction row's `outcome` column held a value this build does not know.
+    /// The store refuses the decode rather than silently mapping it to `AlreadySettled`.
+    #[error("unknown reaction outcome in stored row: {value:?}")]
+    UnknownReactionOutcome {
+        /// The unrecognised column value.
+        value: String,
+    },
+    /// A stored reaction row's `pr_number` column held a negative value.
+    #[error("stored reaction has negative pr_number: {value}")]
+    NegativePrNumber {
+        /// The unrecognised column value.
+        value: i64,
+    },
 }
 
 /// SQLite's extended result code for a primary key conflict. Matched by number rather than
@@ -97,12 +116,40 @@ pub enum StoreError {
 /// code is added here with a comment naming the constraint.
 const SQLITE_CONSTRAINT_PRIMARYKEY: i32 = 1555;
 
+const EVENTS_DDL: &str = "CREATE TABLE IF NOT EXISTS events (
+    event_id    TEXT NOT NULL,
+    owner_user  TEXT NOT NULL,
+    worker      TEXT NOT NULL,
+    agent       TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    payload     TEXT NOT NULL,
+    PRIMARY KEY (owner_user, event_id)
+);";
+
+/// Reaction records persisted per rule fire (slice 0019). One row per receipt: a tick where
+/// two rules both reported `Posted` writes two rows, one per `agent_id`. The reaction
+/// identity derives from `(event_id, agent_id)` so a retry (which the react layer makes
+/// idempotent) finds its earlier row as `WriteOutcome::Duplicate` and invariant 6 holds
+/// without a second record.
+const REACTIONS_DDL: &str = "CREATE TABLE IF NOT EXISTS reactions (
+    reaction_id TEXT NOT NULL,
+    owner_user  TEXT NOT NULL,
+    worker      TEXT NOT NULL,
+    agent_id    TEXT NOT NULL,
+    pr_owner    TEXT NOT NULL,
+    pr_repo     TEXT NOT NULL,
+    pr_number   INTEGER NOT NULL,
+    outcome     TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    PRIMARY KEY (owner_user, reaction_id)
+);";
+
 /// The schema version recorded in `PRAGMA user_version`. Bumped only when the on-disk shape
 /// of a row or the identity encoding changes in a way that an older build would read as
 /// corrupt. Opening a file whose version does not match is an error, not a silent attempt
 /// at best-effort reading: ADR-0008 already notes that an encoding change invalidates every
 /// stored identity, so the correct response is to refuse and let the operator decide.
-const SCHEMA_USER_VERSION: i32 = 2;
+const SCHEMA_USER_VERSION: i32 = 3;
 
 impl EventStore {
     /// Opens a store at `path`, creating the schema if it does not exist, scoped to `owner`.
@@ -130,27 +177,32 @@ impl EventStore {
                 row.get(0)
             })?;
 
-        if on_disk_version == 0 {
-            // Fresh file: create at the current version. The PRAGMA is kept inside the
-            // same execute_batch so a crash between the DDL and the version write cannot
-            // leave a table whose shape is ahead of its advertised version.
-            connection.execute_batch(
-                "CREATE TABLE IF NOT EXISTS events (
-                    event_id    TEXT NOT NULL,
-                    owner_user  TEXT NOT NULL,
-                    worker      TEXT NOT NULL,
-                    agent       TEXT NOT NULL,
-                    observed_at TEXT NOT NULL,
-                    payload     TEXT NOT NULL,
-                    PRIMARY KEY (owner_user, event_id)
-                );
-                PRAGMA user_version = 2;",
-            )?;
-        } else if on_disk_version != SCHEMA_USER_VERSION {
-            return Err(StoreError::SchemaVersionMismatch {
-                expected: SCHEMA_USER_VERSION,
-                found: on_disk_version,
-            });
+        match on_disk_version {
+            0 => {
+                // Fresh file: create at the current version. The PRAGMA is kept inside the
+                // same execute_batch so a crash between the DDL and the version write cannot
+                // leave a table whose shape is ahead of its advertised version.
+                connection.execute_batch(&format!(
+                    "{EVENTS_DDL}
+                     {REACTIONS_DDL}
+                     PRAGMA user_version = {SCHEMA_USER_VERSION};",
+                ))?;
+            }
+            2 => {
+                // Slice 0019 added the `reactions` table; migration from v2 is additive and
+                // leaves `events` rows untouched (DoD scenario 5).
+                connection.execute_batch(&format!(
+                    "{REACTIONS_DDL}
+                     PRAGMA user_version = {SCHEMA_USER_VERSION};",
+                ))?;
+            }
+            v if v == SCHEMA_USER_VERSION => {}
+            v => {
+                return Err(StoreError::SchemaVersionMismatch {
+                    expected: SCHEMA_USER_VERSION,
+                    found: v,
+                });
+            }
         }
         Ok(())
     }
@@ -339,6 +391,239 @@ impl EventStore {
             .collect::<Result<Vec<_>, _>>()?;
         rows.into_iter().map(decode_from_strings).collect()
     }
+
+    /// Writes one reaction row (slice 0019).
+    ///
+    /// Owner scoping runs the same way as [`write`]: a row whose attribution names an owner
+    /// other than this store's owner is refused with [`StoreError::OwnerMismatch`]. Reaction
+    /// identity is derived from `(event_id, agent_id)`, so a retry of the same rule fire on
+    /// the same observation returns [`WriteOutcome::Duplicate`] without a second row. One
+    /// row per rule fire is invariant 6's atom: each rule is an operation accountable to its
+    /// three identities.
+    ///
+    /// [`write`]: Self::write
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] on an owner mismatch, a timestamp-format error, or a SQLite
+    /// error other than a primary key conflict.
+    pub fn write_reaction(&self, row: &ReactionRecord) -> Result<WriteOutcome, StoreError> {
+        if row.attribution.user.as_str() != self.owner.as_str() {
+            return Err(StoreError::OwnerMismatch {
+                expected: self.owner.as_str().to_owned(),
+                actual: row.attribution.user.as_str().to_owned(),
+            });
+        }
+        let agent_id = match &row.attribution.agent {
+            ExecutingAgent::Agent { id } => id.as_str().to_owned(),
+            ExecutingAgent::NoAgent => {
+                return Err(StoreError::MissingAgentId);
+            }
+        };
+        let reaction_id = reaction_id(&row.event_id, &agent_id);
+        let observed_at = OffsetDateTime::now_utc().format(&Rfc3339)?;
+        let pr_number = i64::try_from(row.pr_number).unwrap_or(i64::MAX);
+        let result = self.connection.execute(
+            "INSERT INTO reactions (
+                reaction_id, owner_user, worker, agent_id,
+                pr_owner, pr_repo, pr_number, outcome, observed_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                reaction_id,
+                row.attribution.user.as_str(),
+                row.attribution.worker.as_str(),
+                agent_id,
+                row.pr_owner,
+                row.pr_repo,
+                pr_number,
+                row.outcome.as_str(),
+                observed_at,
+            ],
+        );
+        match result {
+            Ok(_) => Ok(WriteOutcome::Fresh),
+            Err(rusqlite::Error::SqliteFailure(error, _))
+                if error.extended_code == SQLITE_CONSTRAINT_PRIMARYKEY =>
+            {
+                Ok(WriteOutcome::Duplicate)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// All reaction rows in this store, in reaction-id order.
+    ///
+    /// Deterministic order so a test can assert against the full set without sorting.
+    /// Owner-scoped in the query clause the same way [`list`] is.
+    ///
+    /// [`list`]: Self::list
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] on a SQLite error or a row the current code cannot decode.
+    pub fn list_reactions(&self) -> Result<Vec<StoredReaction>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT reaction_id, owner_user, worker, agent_id,
+                    pr_owner, pr_repo, pr_number, outcome, observed_at
+             FROM reactions
+             WHERE owner_user = ?1
+             ORDER BY reaction_id ASC",
+        )?;
+        let rows = statement
+            .query_map(params![self.owner.as_str()], |row| {
+                Ok(StoredReactionColumns {
+                    reaction_id: row.get(0)?,
+                    owner: row.get(1)?,
+                    worker: row.get(2)?,
+                    agent_id: row.get(3)?,
+                    pr_owner: row.get(4)?,
+                    pr_repo: row.get(5)?,
+                    pr_number: row.get(6)?,
+                    outcome: row.get(7)?,
+                    observed_at: row.get(8)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter().map(decode_reaction).collect()
+    }
+}
+
+/// One rule-fire the poll loop submits for persistence (slice 0019).
+///
+/// Built by the poll loop out of the reactor's attribution and the tick's observation
+/// identity. Not derived from a `ReactionReceipt` directly: the react crate's receipt type
+/// carries kind-specific payload the slice 0019 schema deliberately omits, so the carrier
+/// here is narrower.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReactionRecord {
+    /// The three identities accountable for this reaction. The `agent` field must be an
+    /// [`ExecutingAgent::Agent`]; a `NoAgent` attribution returns [`StoreError::MissingAgentId`].
+    pub attribution: Attribution,
+    /// The pull request's owner (e.g. "octo-org").
+    pub pr_owner: String,
+    /// The pull request's repo (e.g. "contributron").
+    pub pr_repo: String,
+    /// The pull request's number.
+    pub pr_number: u64,
+    /// What the rule did.
+    pub outcome: ReactionRecordOutcome,
+    /// The identity of the observation this reaction fired against. Pairs with `agent_id`
+    /// to form the reaction's own identity.
+    pub event_id: EventId,
+}
+
+/// What a persisted reaction was (slice 0019).
+///
+/// Only `Posted` and `AlreadySettled` are persisted: `NotApplicable` has no operation to
+/// record, and `Failed` never completed an operation against the provider (the error
+/// surfaces on the tick stream instead). The variants here mirror the two success cases of
+/// [`contributron_poll::ReactionReport`] rather than re-exporting that type so the store
+/// crate keeps its dependency direction (store → domain, never store → poll).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReactionRecordOutcome {
+    /// The rule performed a write against the provider.
+    Posted,
+    /// The rule confirmed the desired state was already in place; no write.
+    AlreadySettled,
+}
+
+impl ReactionRecordOutcome {
+    /// Column text written to the `outcome` column, and parsed back by `list_reactions`.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Posted => "posted",
+            Self::AlreadySettled => "already-settled",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, StoreError> {
+        match value {
+            "posted" => Ok(Self::Posted),
+            "already-settled" => Ok(Self::AlreadySettled),
+            other => Err(StoreError::UnknownReactionOutcome {
+                value: other.to_owned(),
+            }),
+        }
+    }
+}
+
+/// A reaction row read back from the store (slice 0019 round-trip surface).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredReaction {
+    /// The derived reaction identity.
+    pub reaction_id: String,
+    /// The three identities, reconstructed from the stored columns.
+    pub attribution: Attribution,
+    /// The pull request's owner.
+    pub pr_owner: String,
+    /// The pull request's repo.
+    pub pr_repo: String,
+    /// The pull request's number.
+    pub pr_number: u64,
+    /// What the rule did.
+    pub outcome: ReactionRecordOutcome,
+    /// The timestamp the row was written with.
+    pub observed_at: String,
+}
+
+struct StoredReactionColumns {
+    reaction_id: String,
+    owner: String,
+    worker: String,
+    agent_id: String,
+    pr_owner: String,
+    pr_repo: String,
+    pr_number: i64,
+    outcome: String,
+    observed_at: String,
+}
+
+fn decode_reaction(columns: StoredReactionColumns) -> Result<StoredReaction, StoreError> {
+    let pr_number = u64::try_from(columns.pr_number).map_err(|_| StoreError::NegativePrNumber {
+        value: columns.pr_number,
+    })?;
+    let attribution = Attribution {
+        user: UserId::new(columns.owner),
+        worker: WorkerId::new(columns.worker),
+        agent: ExecutingAgent::Agent {
+            id: contributron_domain::actor::AgentId::new(columns.agent_id),
+        },
+    };
+    Ok(StoredReaction {
+        reaction_id: columns.reaction_id,
+        attribution,
+        pr_owner: columns.pr_owner,
+        pr_repo: columns.pr_repo,
+        pr_number,
+        outcome: ReactionRecordOutcome::parse(&columns.outcome)?,
+        observed_at: columns.observed_at,
+    })
+}
+
+/// Derives the reaction identity from `(event_id, agent_id)`. SHA-256 over
+/// `"{event_id}:{agent_id}"` — same hasher shape as [`EventId`] in the domain crate. The
+/// colon separator cannot appear inside an `event_id` (lowercase hex only) and the
+/// react crate's agent id literals are `rule:*` strings whose own colon is part of the
+/// identity namespace, so there is no ambiguity.
+fn reaction_id(event_id: &EventId, agent_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(event_id.as_str().as_bytes());
+    hasher.update(b":");
+    hasher.update(agent_id.as_bytes());
+    hex(&hasher.finalize())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    const DIGITS: [char; 16] = [
+        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
+    ];
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        let (high, low) = (usize::from(byte / 16), usize::from(byte % 16));
+        out.push(DIGITS[high]);
+        out.push(DIGITS[low]);
+    }
+    out
 }
 
 struct StoredColumns {

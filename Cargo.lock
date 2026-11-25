@@ -366,6 +366,7 @@ dependencies = [
  "contributron-domain",
  "rusqlite",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror",
  "time",

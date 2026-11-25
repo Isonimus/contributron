@@ -85,12 +85,6 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
   definition or track a per-transition marker (slice 0014 Design notes marker-only
   idempotency; this is the extension that follows). Found by the 2026-11-24 adversarial
   review (ADR-0001).
-- [feature] Persist a reaction record in the store with the three-identity tuple
-  (`owner_user`, `worker`, `agent_id="rule:threads-cleared"`) alongside the pull-request
-  locator and the posted comment id. Slice 0014 carries the tuple through `TickOutcome` but
-  the store has no reaction surface, so invariant 6 is honoured in-process and not in
-  persistence. A third rule is likely to shape the schema; until then this is the gap
-  (ADR-0005).
 - [feature] Anonymous capture client for public-repo read paths. The current
   `crates/github/src/capture.rs` client requires a token at construction, so `watch`
   against a public repository without `CONTRIBUTRON_TOKEN` or `--token-path` cannot run

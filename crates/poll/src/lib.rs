@@ -11,10 +11,12 @@
 //! [ADR-0001](../../../adr/0001-github-is-the-only-provider-adapter-in-the-mvp.md) makes
 //! for the provider boundary, applied to the scheduler.
 
-use contributron_domain::actor::{Attribution, ExecutingAgent, UserId, WorkerId};
+use contributron_domain::actor::{AgentId, Attribution, ExecutingAgent, UserId, WorkerId};
 use contributron_domain::event::PullRequestObservation;
 use contributron_domain::pull_request::ObservedPullRequest;
-use contributron_store::{EventStore, StoreError, WriteOutcome};
+use contributron_store::{
+    EventStore, ReactionRecord, ReactionRecordOutcome, StoreError, WriteOutcome,
+};
 use std::collections::hash_map::DefaultHasher;
 use std::future::Future;
 use std::hash::{Hash, Hasher};
@@ -99,6 +101,16 @@ pub struct Tick {
     /// whose outcome did not reach the reactor: a fetch or store failure, or an unchanged
     /// observation, since there is no new state for the reactor to compare against).
     pub reaction: Option<ReactionReport>,
+    /// Reaction-record persistence failures that happened on this tick (slice 0019). Each
+    /// entry pairs an `agent_id` with the error returned when the row could not be
+    /// inserted. Empty on every tick that either did not attempt a persistence write (no
+    /// reactor, `NotApplicable`, `Failed`) or whose writes all succeeded. A non-empty list
+    /// means the provider-side outcome is accurate in [`reaction`] but the audit record
+    /// did not land; the write path does not retry, so the gap is loud rather than
+    /// hidden.
+    ///
+    /// [`reaction`]: Self::reaction
+    pub persist_errors: Vec<(String, String)>,
 }
 
 /// The four outcomes of one tick.
@@ -209,6 +221,10 @@ pub struct PollConfig {
     pub interval: Duration,
     /// The operator the store is scoped to (invariant 7).
     pub owner: UserId,
+    /// The worker identity the reaction records carry (slice 0019). Must match the worker
+    /// the reactor attributes its receipts with, so a reaction row's three identities line
+    /// up with the in-process `Attribution` the react crate built.
+    pub worker: WorkerId,
 }
 
 /// Runs the polling loop until `cancel` reports `true` or its sender is dropped.
@@ -267,6 +283,7 @@ pub async fn run_loop_with_reactor(
             interval: config.interval,
             jitter,
             owner: config.owner.clone(),
+            worker: config.worker.clone(),
             store_path: store_path.to_path_buf(),
             events: events.clone(),
             cancel: cancel.clone(),
@@ -307,11 +324,17 @@ struct TaskState {
     interval: Duration,
     jitter: Duration,
     owner: UserId,
+    worker: WorkerId,
     store_path: PathBuf,
     events: mpsc::UnboundedSender<Tick>,
     cancel: watch::Receiver<bool>,
 }
 
+// Slice 0019 extended run_one's per-tick match arms with a synchronous persistence step
+// after each reactor call. Decomposing further would split the state machine across
+// functions without making any arm reusable — the fresh / unchanged / store-failed /
+// fetch-failed arms each hold distinct state mutations — so the lines live here.
+#[allow(clippy::too_many_lines)]
 async fn run_one(mut state: TaskState) -> Result<(), PollError> {
     // A fresh `watch::Receiver` treats its initial value as unseen, so `changed()` would
     // resolve immediately on the first call. Marking it seen up front means the `select!`
@@ -353,35 +376,70 @@ async fn run_one(mut state: TaskState) -> Result<(), PollError> {
         // shutdown scenario requires a poll in flight to run to completion.
         let fetch_result = (state.fetch)(state.locator.clone()).await;
         let step = apply_fetch_to_store(fetch_result, &store, &state.owner);
-        let (outcome, reaction, delay) = match step {
+        let (outcome, reaction, persist_errors, delay) = match step {
             StepAfterWrite::Fresh(observed) => {
-                let reaction = handle_fresh_reaction(
+                // The fresh-tick handler returns with `prior` not yet advanced and
+                // `pending_retry` not yet cleared: persistence runs in this sync block
+                // (store is !Sync and must not cross an await), then `advance_or_park`
+                // settles the loop state.
+                let handled = handle_fresh_reaction(
                     &state.locator,
                     state.reactor.as_ref(),
-                    &mut prior,
-                    &mut pending_retry,
+                    prior.as_ref(),
                     observed,
                 )
                 .await;
+                pending_retry = None;
+                let (reaction, persist_errors) = apply_handled(
+                    &handled,
+                    &store,
+                    &state.locator,
+                    &state.owner,
+                    &state.worker,
+                );
+                if let Some(observed) = handled.observed {
+                    match handled.report.as_ref() {
+                        Some(decision) => {
+                            advance_or_park(&mut prior, &mut pending_retry, decision, observed);
+                        }
+                        None => {
+                            prior = Some(observed);
+                        }
+                    }
+                }
                 consecutive_failures = 0;
                 (
                     TickOutcome::Fresh,
                     reaction,
+                    persist_errors,
                     success_delay(&state, &mut jitter_pending),
                 )
             }
             StepAfterWrite::Unchanged => {
-                let reaction = handle_unchanged_reaction(
+                let handled = handle_unchanged_reaction(
                     &state.locator,
                     state.reactor.as_ref(),
-                    &mut prior,
-                    &mut pending_retry,
+                    prior.as_ref(),
+                    pending_retry.as_ref(),
                 )
                 .await;
+                let (reaction, persist_errors) = apply_handled(
+                    &handled,
+                    &store,
+                    &state.locator,
+                    &state.owner,
+                    &state.worker,
+                );
+                if let (Some(decision), Some(observed)) =
+                    (handled.report.as_ref(), handled.observed)
+                {
+                    advance_or_park(&mut prior, &mut pending_retry, decision, observed);
+                }
                 consecutive_failures = 0;
                 (
                     TickOutcome::Unchanged,
                     reaction,
+                    persist_errors,
                     success_delay(&state, &mut jitter_pending),
                 )
             }
@@ -394,13 +452,19 @@ async fn run_one(mut state: TaskState) -> Result<(), PollError> {
                         backoff: Some(backoff),
                     },
                     None,
+                    Vec::new(),
                     backoff,
                 )
             }
             StepAfterWrite::FetchFailed(error) => {
                 consecutive_failures = consecutive_failures.saturating_add(1);
                 let backoff = backoff_delay(state.interval, consecutive_failures);
-                (TickOutcome::FetchFailed { error, backoff }, None, backoff)
+                (
+                    TickOutcome::FetchFailed { error, backoff },
+                    None,
+                    Vec::new(),
+                    backoff,
+                )
             }
         };
 
@@ -408,6 +472,7 @@ async fn run_one(mut state: TaskState) -> Result<(), PollError> {
             locator: state.locator.clone(),
             outcome,
             reaction,
+            persist_errors,
         };
         // A send failure means the receiver was dropped: the caller has moved on, so there
         // is no one to report further ticks to. Exit cleanly.
@@ -449,6 +514,7 @@ fn open_store_and_seed_prior(
                     backoff: None,
                 },
                 reaction: None,
+                persist_errors: Vec::new(),
             };
             drop(state.events.send(tick));
             return None;
@@ -465,6 +531,7 @@ fn open_store_and_seed_prior(
                     backoff: None,
                 },
                 reaction: None,
+                persist_errors: Vec::new(),
             };
             drop(state.events.send(tick));
             None
@@ -474,21 +541,34 @@ fn open_store_and_seed_prior(
     Some((store, prior))
 }
 
+/// Returned from the fresh/unchanged handlers so the caller can persist reaction records
+/// synchronously (the store is `!Sync` and must not cross an await point) and advance
+/// `prior`/`pending_retry` afterwards.
+struct ReactionHandled {
+    /// What the reactor decided, if one ran.
+    report: Option<ReactionReport>,
+    /// The observation the reactor compared `new` against; the one to persist reaction
+    /// records for. `None` when no reactor ran (no report, nothing to persist).
+    observed: Option<ObservedPullRequest>,
+}
+
 async fn handle_fresh_reaction(
     locator: &PullRequestLocator,
     reactor: Option<&Reactor>,
-    prior: &mut Option<ObservedPullRequest>,
-    pending_retry: &mut Option<ObservedPullRequest>,
+    prior: Option<&ObservedPullRequest>,
     observed: ObservedPullRequest,
-) -> Option<ReactionReport> {
-    *pending_retry = None;
+) -> ReactionHandled {
     if let Some(r) = reactor {
-        let decision = (r)(locator.clone(), prior.clone(), observed.clone()).await;
-        advance_or_park(prior, pending_retry, &decision, observed);
-        Some(decision)
+        let decision = (r)(locator.clone(), prior.cloned(), observed.clone()).await;
+        ReactionHandled {
+            report: Some(decision),
+            observed: Some(observed),
+        }
     } else {
-        *prior = Some(observed);
-        None
+        ReactionHandled {
+            report: None,
+            observed: Some(observed),
+        }
     }
 }
 
@@ -497,14 +577,109 @@ async fn handle_fresh_reaction(
 async fn handle_unchanged_reaction(
     locator: &PullRequestLocator,
     reactor: Option<&Reactor>,
-    prior: &mut Option<ObservedPullRequest>,
-    pending_retry: &mut Option<ObservedPullRequest>,
-) -> Option<ReactionReport> {
-    let parked = pending_retry.clone()?;
-    let r = reactor?;
-    let decision = (r)(locator.clone(), prior.clone(), parked.clone()).await;
-    advance_or_park(prior, pending_retry, &decision, parked);
-    Some(decision)
+    prior: Option<&ObservedPullRequest>,
+    pending_retry: Option<&ObservedPullRequest>,
+) -> ReactionHandled {
+    let Some(parked) = pending_retry.cloned() else {
+        return ReactionHandled {
+            report: None,
+            observed: None,
+        };
+    };
+    let Some(r) = reactor else {
+        return ReactionHandled {
+            report: None,
+            observed: None,
+        };
+    };
+    let decision = (r)(locator.clone(), prior.cloned(), parked.clone()).await;
+    ReactionHandled {
+        report: Some(decision),
+        observed: Some(parked),
+    }
+}
+
+/// Thin wrapper that extracts `(report, persist_errors)` from a [`ReactionHandled`].
+///
+/// Split out of `run_one` so the two match arms share the identical sync path and the
+/// store never crosses an await boundary.
+fn apply_handled(
+    handled: &ReactionHandled,
+    store: &EventStore,
+    locator: &PullRequestLocator,
+    owner: &UserId,
+    worker: &WorkerId,
+) -> (Option<ReactionReport>, Vec<(String, String)>) {
+    match (handled.report.as_ref(), handled.observed.as_ref()) {
+        (Some(decision), Some(observed)) => {
+            let errors = persist_reactions(store, locator, owner, worker, observed, decision);
+            (Some(decision.clone()), errors)
+        }
+        _ => (None, Vec::new()),
+    }
+}
+
+/// Writes one reaction row per `agent_id` on a `Posted` or `AlreadySettled` decision, and
+/// returns per-agent error messages for any writes that failed.
+///
+/// `NotApplicable` and `Failed` persist nothing: the first had no operation to record and
+/// the second never completed one against the provider (its error is already on the tick
+/// stream). A persist failure never masks the provider outcome: the caller still emits the
+/// reaction on the tick, and the error surfaces in [`Tick::persist_errors`] (slice 0019).
+fn persist_reactions(
+    store: &EventStore,
+    locator: &PullRequestLocator,
+    owner: &UserId,
+    worker: &WorkerId,
+    observed: &ObservedPullRequest,
+    decision: &ReactionReport,
+) -> Vec<(String, String)> {
+    let mut errors: Vec<(String, String)> = Vec::new();
+    let (agent_ids, outcome) = match decision {
+        ReactionReport::Posted { agent_ids, .. } => (agent_ids, ReactionRecordOutcome::Posted),
+        ReactionReport::AlreadySettled { agent_ids, .. } => {
+            (agent_ids, ReactionRecordOutcome::AlreadySettled)
+        }
+        ReactionReport::NotApplicable | ReactionReport::Failed { .. } => return errors,
+    };
+    if agent_ids.is_empty() {
+        return errors;
+    }
+    let placeholder = Attribution {
+        user: owner.clone(),
+        worker: worker.clone(),
+        agent: ExecutingAgent::NoAgent,
+    };
+    let event_id = match PullRequestObservation::new(placeholder, observed.clone()).event_id() {
+        Ok(id) => id,
+        Err(e) => {
+            // No way to derive the identity means no reaction row can be written. Report
+            // once under a sentinel agent id so the operator sees the gap without having
+            // to guess which rule it belongs to.
+            errors.push(("<all>".to_owned(), format!("event_id: {e}")));
+            return errors;
+        }
+    };
+    for agent_id in agent_ids {
+        let record = ReactionRecord {
+            attribution: Attribution {
+                user: owner.clone(),
+                worker: worker.clone(),
+                agent: ExecutingAgent::Agent {
+                    id: AgentId::new(agent_id),
+                },
+            },
+            pr_owner: locator.owner.clone(),
+            pr_repo: locator.repo.clone(),
+            pr_number: locator.number,
+            outcome,
+            event_id: event_id.clone(),
+        };
+        if let Err(e) = store.write_reaction(&record) {
+            errors.push((agent_id.clone(), e.to_string()));
+        }
+    }
+    errors
 }
 
 /// The delay to use after a successful tick: the base interval, plus the per-target jitter

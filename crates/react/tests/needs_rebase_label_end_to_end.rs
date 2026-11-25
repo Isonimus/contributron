@@ -136,6 +136,7 @@ async fn conflict_cycle_applies_then_removes_across_two_ticks() {
         targets: vec![target.clone()],
         interval,
         owner: UserId::new("local-operator"),
+        worker: WorkerId::new("cli"),
     };
 
     let store_path_for_loop = store_path.clone();
@@ -226,6 +227,7 @@ async fn live_label_set_matches_rule_state_after_restart() {
         targets: vec![target.clone()],
         interval,
         owner: UserId::new("local-operator"),
+        worker: WorkerId::new("cli"),
     };
 
     let store_path_for_loop = store_path.clone();
