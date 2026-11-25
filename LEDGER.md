@@ -83,21 +83,6 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
   end-to-end even though slice 0014 scenario 5 asserts the read path keeps working. The
   CLI half (`list`, token resolution) does keep working; the network half does not. Add an
   anonymous `octocrab` constructor and plumb it through (ADR-0013).
-- [feature] Fail loud when the GraphQL `pullRequest.mergeable` field is absent from the
-  payload (not when it is present and null; null is legitimate "computing" state). The
-  normalizer currently maps missing → [`Mergeable::Unknown`] via serde's `Option<Mergeable>`,
-  which would silently kill the slice-0015 rule if a future query edit removed the
-  `mergeable` selection. Fix: use a double-Option (`Option<Option<Mergeable>>`) or a custom
-  deserializer that distinguishes "field absent" from "field null", and route the former to
-  a field-named `NormalizeError::MissingField`. Found by the 2026-11-25 adversarial review
-  of slice 0015 (finding 6) (ADR-0001).
-- [bug] `GitHubClient::list_labels` silently drops provider labels that fail
-  `Label::new` via `filter_map(|l| Label::new(l.name).ok())` in `crates/github/src/client.rs`,
-  which swallows a normalization error against the fail-loud rule. Low blast radius because
-  GitHub trims label names and the only consumer compares against the trimmed `needs-rebase`
-  literal, so a mispadded sibling label does not currently cause a misclassification.
-  Fix: propagate a `NormalizeError` the way review-thread normalization does. Found by the
-  2026-11-25 adversarial review of slice 0016 (finding 3) (ADR-0001).
 - [bug] `chrono` 0.4 is unmaintained (RUSTSEC-2026-0543). Transitive through the dependency
   graph; `cargo audit` surfaces it on every run. No functional impact yet, but the advisory
   will remain noisy until the dependency is replaced or pinned to a maintained fork. Track

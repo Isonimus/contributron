@@ -151,11 +151,9 @@ impl ProviderClient for GitHubClient {
     /// Slice 0016: list the labels currently attached to a pull request. A pull request is
     /// an issue on the labels endpoint; `list_labels_for_issue` is the correct call.
     ///
-    /// An unparseable label name (empty, padded) is skipped rather than failing the whole
-    /// list: a third-party label defined with a shape this code does not accept is not a
-    /// reason to refuse the rule's read path. A warning would belong here in a later
-    /// slice; for now the skip is silent because `needs-rebase` is the only label this rule
-    /// cares about, and that one is constructed from a known-good literal.
+    /// A label whose name fails [`Label::new`] (empty, padded with whitespace) surfaces as
+    /// a [`ProviderError::Client`] naming the offending position rather than being silently
+    /// dropped: slice 0022 closes the fail-loud gap the slice-0016 ship note acknowledged.
     fn list_labels<'a>(&'a self, locator: &'a PullRequestLocator) -> ClientFuture<'a, Vec<Label>> {
         Box::pin(async move {
             let page = self
@@ -171,10 +169,18 @@ impl ProviderClient for GitHubClient {
                 .all_pages(page)
                 .await
                 .map_err(|e| ProviderError::Client(format!("listing labels: {e}")))?;
-            Ok(all
-                .into_iter()
-                .filter_map(|l| Label::new(l.name).ok())
-                .collect())
+            let mut out: Vec<Label> = Vec::with_capacity(all.len());
+            for (index, raw) in all.into_iter().enumerate() {
+                let label = Label::new(raw.name.clone()).map_err(|e| {
+                    ProviderError::Client(format!(
+                        "GitHub returned a label at position {index} that did not pass \
+                         Label::new ({raw_name:?}): {e}",
+                        raw_name = raw.name,
+                    ))
+                })?;
+                out.push(label);
+            }
+            Ok(out)
         })
     }
 

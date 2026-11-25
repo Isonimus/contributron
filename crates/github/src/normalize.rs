@@ -103,9 +103,20 @@ pub fn normalize_pull_request(
     // GitHub's `mergeable` field is nullable: the server returns null while it is still
     // computing. A null is normalized to [`Mergeable::Unknown`] rather than refused, because
     // "not computed yet" is an ordinary state the transition detector must see as neither
-    // clean nor conflicting. An unknown enum variant from the API would already have failed
-    // deserialization of the `Option<Mergeable>`, so this step is infallible.
-    let mergeable = payload.mergeable.unwrap_or(Mergeable::Unknown);
+    // clean nor conflicting. A *missing* key is different: a future query edit dropping
+    // the field would silently normalize every PR to Unknown and the slice-0015 rule
+    // would stop firing. Slice 0022 distinguishes the two: outer None (field absent) is
+    // loud, Some(None) (field null) is Unknown.
+    let mergeable_field = format!("{PULL_REQUEST}.mergeable");
+    let mergeable = match payload.mergeable {
+        None => {
+            return Err(NormalizeError::MissingField {
+                field: mergeable_field,
+            });
+        }
+        Some(None) => Mergeable::Unknown,
+        Some(Some(value)) => value,
+    };
 
     let threads = normalize_threads(payload)?;
 

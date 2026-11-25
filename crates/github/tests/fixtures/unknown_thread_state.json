@@ -8,6 +8,7 @@
         "author": {
           "login": "Isonimus"
         },
+        "mergeable": "MERGEABLE",
         "reviewThreads": {
           "nodes": [
             {
