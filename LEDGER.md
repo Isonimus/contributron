@@ -137,6 +137,27 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
   the upstream status and either migrate to `jiff` (the sibling-crate replacement the
   advisory points at) or wait for the ecosystem to migrate transitively. Imported from the
   GitHub-issue tracker on 2026-11-25 under ADR-0018 (ADR-0018).
+- [feature] Split `GitHubClient::request_reviewers` into per-login calls so one bad entry
+  does not block the rest. The current call batches every missing reviewer and GitHub's
+  422 ("Reviewer cannot be requested from X") fails the whole write, parking the tick for
+  a retry-forever loop (the park-on-error contract in `advance_or_park`). The PR-author
+  case is fixed at the rule layer in slice 0017, but any other provider-side rejection
+  (a suspended account, a reviewer no longer in the org) still has the same shape. Split
+  the write so a single 422 is recorded against one agent id and the rest succeed. Found
+  by the 2026-11-25 adversarial review of slice 0017 (finding 1) (ADR-0001).
+- [feature] Circuit-breaker on non-transient reactor errors. `advance_or_park` was built
+  for transient failures (503, rate-limit, network), so a tick that parks on a permanent
+  422 or 403 re-runs the failing call every interval forever. Classify client errors and
+  escalate the locator (e.g. a `Failed` ledger entry on the persisted reaction row, slice
+  TBD) or back off exponentially instead of the fixed per-target interval. Found by the
+  2026-11-25 adversarial review of slice 0017 (finding 1) (ADR-0012).
+- [bug] `AuthorLogin::new` rejects whitespace-only input but stores the untrimmed value, so
+  `" alice"` passes validation and is sent to the provider with its leading space. The
+  slice 0017 CLI boundary now trims `--reviewer` entries as a workaround, but the right
+  fix is to store `value.trim().to_owned()` at the newtype constructor so every call site
+  is covered. Same shape as the ledgered `UserId`/`WorkerId`/`AgentId` empty-string
+  boundary gap. Found by the 2026-11-25 adversarial review of slice 0017 (finding 4)
+  (ADR-0005).
 - [feature] Paginate `reviewThreads`. A capture reads the first 100 threads
   (`THREAD_PAGE_SIZE` in `crates/github/src/capture.rs`), and a pull request with more cannot
   be observed at all: the normalizer refuses a payload whose `pageInfo.hasNextPage` is true

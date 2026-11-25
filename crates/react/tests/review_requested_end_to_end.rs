@@ -23,8 +23,8 @@ use contributron_poll::{
     ReactorFuture, Tick, TickOutcome, run_loop_with_reactor,
 };
 use contributron_react::{
-    ClientFuture, DraftHistory, ExistingComment, ProviderClient, ProviderError,
-    REVIEW_REQUESTED_RULE_AGENT_ID, ReactionOutcome, react_review_requested,
+    ClientFuture, ExistingComment, ProviderClient, ProviderError, REVIEW_REQUESTED_RULE_AGENT_ID,
+    ReactionOutcome, react_review_requested,
 };
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -89,7 +89,6 @@ fn reactor_from(client: Arc<FakeClient>, reviewers: Arc<Vec<AuthorLogin>>) -> Re
                 &locator,
                 prior.as_ref(),
                 &new,
-                client.as_ref(),
                 client.as_ref(),
                 &reviewers,
             )
@@ -251,16 +250,6 @@ impl ProviderClient for MissingTokenClient {
     }
 }
 
-/// A trivial [`DraftHistory`] that says the stored prior was draft.
-#[derive(Debug, Default)]
-struct DraftHistoryWasDraft;
-
-impl DraftHistory for DraftHistoryWasDraft {
-    fn last_draft(&self, _locator: &PullRequestLocator) -> Result<Option<bool>, String> {
-        Ok(Some(true))
-    }
-}
-
 /// DoD scenario 6 driven end-to-end: with a configured reviewer and no credential, a
 /// draft→ready transition is reported as a failed reaction (the error carries the
 /// ADR-0013 message) rather than silently no-opping.
@@ -278,14 +267,11 @@ async fn draft_to_ready_without_a_credential_surfaces_the_adr_0013_error() {
     let owner = UserId::new("local-operator");
     let worker = WorkerId::new("cli");
     let client: Arc<dyn ProviderClient> = Arc::new(MissingTokenClient);
-    let history: Arc<dyn DraftHistory> = Arc::new(DraftHistoryWasDraft);
     let reactor: Reactor = {
         let reviewers = Arc::clone(&reviewers);
         let client = Arc::clone(&client);
-        let history = Arc::clone(&history);
         Arc::new(move |locator, prior, new| {
             let client = Arc::clone(&client);
-            let history = Arc::clone(&history);
             let reviewers = Arc::clone(&reviewers);
             let owner = owner.clone();
             let worker = worker.clone();
@@ -296,7 +282,6 @@ async fn draft_to_ready_without_a_credential_surfaces_the_adr_0013_error() {
                     &locator,
                     prior.as_ref(),
                     &new,
-                    history.as_ref(),
                     client.as_ref(),
                     &reviewers,
                 )

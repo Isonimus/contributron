@@ -14,7 +14,7 @@ use contributron_domain::pull_request::{
 };
 use contributron_poll::PullRequestLocator;
 use contributron_react::{
-    ClientFuture, DraftHistory, ExistingComment, MergeableHistory, ProviderClient, ProviderError,
+    ClientFuture, ExistingComment, MergeableHistory, ProviderClient, ProviderError,
 };
 use std::collections::BTreeSet;
 use std::sync::Mutex;
@@ -59,13 +59,29 @@ pub fn pr_with_mergeable(mergeable: Mergeable) -> ObservedPullRequest {
 }
 
 /// Build an observation whose `draft` flag is the given value and whose threads/
-/// mergeability are the slice 0017 don't-care defaults.
+/// mergeability are the slice 0017 don't-care defaults. Author is `DeletedAccount`, which
+/// cannot collide with any configured reviewer login.
 pub fn pr_with_draft(draft: bool) -> ObservedPullRequest {
     ObservedPullRequest::new(
         PullRequestNumber::new(1).expect("number"),
         "example",
         draft,
         PullRequestAuthor::DeletedAccount,
+        Mergeable::Unknown,
+        Vec::new(),
+    )
+}
+
+/// Build an observation whose `draft` flag and `author` login are the given values. Used by
+/// the slice 0017 author-skip regression test (2026-11-25 adversarial review finding 1).
+pub fn pr_with_draft_and_author(draft: bool, author_login: &str) -> ObservedPullRequest {
+    ObservedPullRequest::new(
+        PullRequestNumber::new(1).expect("number"),
+        "example",
+        draft,
+        PullRequestAuthor::Account {
+            login: AuthorLogin::new(author_login).expect("login"),
+        },
         Mergeable::Unknown,
         Vec::new(),
     )
@@ -99,8 +115,8 @@ pub enum LiveMerge {
 
 /// Fake provider client: in-memory comments, labels and review-request list, records every
 /// post, label mutation and review-request call, a swappable live-merge response for
-/// slice 0015/0016 tests, and an in-memory draft-history value for slice 0017. Doubles as a
-/// [`MergeableHistory`] and [`DraftHistory`] for history-walk tests.
+/// slice 0015/0016 tests, and the mergeable-history slot for slice 0015. Doubles as a
+/// [`MergeableHistory`] for history-walk tests.
 #[derive(Debug)]
 pub struct FakeClient {
     existing: Mutex<Vec<ExistingComment>>,
@@ -116,8 +132,6 @@ pub struct FakeClient {
     requested_reviewers_err: Mutex<Option<String>>,
     request_reviewers_err: Mutex<Option<String>>,
     request_reviewers_calls: Mutex<Vec<Vec<String>>>,
-    draft_history: Mutex<Option<bool>>,
-    draft_history_err: Mutex<Option<String>>,
 }
 
 impl Default for FakeClient {
@@ -136,8 +150,6 @@ impl Default for FakeClient {
             requested_reviewers_err: Mutex::new(None),
             request_reviewers_err: Mutex::new(None),
             request_reviewers_calls: Mutex::new(Vec::new()),
-            draft_history: Mutex::new(None),
-            draft_history_err: Mutex::new(None),
         }
     }
 }
@@ -246,16 +258,6 @@ impl FakeClient {
             .expect("requested_reviewers")
             .clone()
     }
-
-    /// Configure what the fake's [`DraftHistory::last_draft`] returns.
-    pub fn set_draft_history(&self, found: Option<bool>) {
-        *self.draft_history.lock().expect("draft_history") = found;
-    }
-
-    /// Force the draft-history query to error on the next call.
-    pub fn set_draft_history_err(&self, message: impl Into<String>) {
-        *self.draft_history_err.lock().expect("draft_history_err") = Some(message.into());
-    }
 }
 
 impl MergeableHistory for FakeClient {
@@ -264,20 +266,6 @@ impl MergeableHistory for FakeClient {
             return Err(msg);
         }
         Ok(*self.history.lock().expect("history"))
-    }
-}
-
-impl DraftHistory for FakeClient {
-    fn last_draft(&self, _locator: &PullRequestLocator) -> Result<Option<bool>, String> {
-        if let Some(msg) = self
-            .draft_history_err
-            .lock()
-            .expect("draft_history_err")
-            .clone()
-        {
-            return Err(msg);
-        }
-        Ok(*self.draft_history.lock().expect("draft_history"))
     }
 }
 

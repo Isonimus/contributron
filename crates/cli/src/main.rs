@@ -14,11 +14,12 @@ use contributron_poll::{
     ReactorFuture, Tick, TickOutcome, poll_once, run_loop_with_reactor,
 };
 use contributron_react::{
-    ClientFuture, DraftHistory, ExistingComment, MergeableHistory, ProviderClient, ProviderError,
+    ClientFuture, ExistingComment, MergeableHistory, ProviderClient, ProviderError,
     combine_rule_results, react, react_merge_conflicts_cleared, react_needs_rebase_label,
     react_review_requested,
 };
 use contributron_store::EventStore;
+use std::env::VarError;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -360,17 +361,12 @@ fn build_reactor(
     };
     let worker = WorkerId::new(CLI_WORKER);
     let mergeable_history: Arc<dyn MergeableHistory> = Arc::new(StoreMergeableHistory {
-        store_path: store_path.clone(),
-        owner: owner.clone(),
-    });
-    let draft_history: Arc<dyn DraftHistory> = Arc::new(StoreDraftHistory {
         store_path,
         owner: owner.clone(),
     });
     let reactor: Reactor = Arc::new(move |locator, prior, new| {
         let client = Arc::clone(&client);
         let mergeable_history = Arc::clone(&mergeable_history);
-        let draft_history = Arc::clone(&draft_history);
         let reviewers = Arc::clone(&reviewers);
         let owner = owner.clone();
         let worker = worker.clone();
@@ -419,7 +415,6 @@ fn build_reactor(
                 &locator,
                 prior.as_ref(),
                 &new,
-                draft_history.as_ref(),
                 client.as_ref(),
                 reviewers.as_ref(),
             )
@@ -457,30 +452,6 @@ impl MergeableHistory for StoreMergeableHistory {
             .latest_settled_mergeable_for_number(locator.number)
             .map_err(|e| format!("reading history: {e}"))?;
         Ok(found.map(|o| o.mergeable))
-    }
-}
-
-/// Implements [`DraftHistory`] by opening the event store on demand and reading the `draft`
-/// flag of the most recent observation for the pull request. Draft is binary, so unlike
-/// `StoreMergeableHistory` there is no "settled" filter to apply — any stored row is
-/// usable. Same fresh-connection-per-lookup pattern as the mergeable history.
-#[derive(Debug, Clone)]
-struct StoreDraftHistory {
-    store_path: PathBuf,
-    owner: UserId,
-}
-
-impl DraftHistory for StoreDraftHistory {
-    fn last_draft(
-        &self,
-        locator: &contributron_poll::PullRequestLocator,
-    ) -> Result<Option<bool>, String> {
-        let store = EventStore::open(&self.store_path, self.owner.clone())
-            .map_err(|e| format!("opening store: {e}"))?;
-        let found = store
-            .latest_for_number(locator.number)
-            .map_err(|e| format!("reading history: {e}"))?;
-        Ok(found.map(|o| o.draft))
     }
 }
 
@@ -687,13 +658,33 @@ fn parse_repo(repo: &str, number: u64) -> Result<GhLocator> {
 /// reports `NotApplicable` without touching the client, so a token-less public-repo watch
 /// is unaffected.
 fn resolve_reviewers(flag: Vec<String>) -> Result<Vec<AuthorLogin>> {
-    let env = std::env::var("CONTRIBUTRON_REVIEWERS").ok();
+    let env = read_reviewers_env(std::env::var("CONTRIBUTRON_REVIEWERS"))?;
     resolve_reviewers_with_env(flag, env.as_deref())
+}
+
+/// Reads the `CONTRIBUTRON_REVIEWERS` env var and maps `VarError` to an explicit, fail-loud
+/// result. `NotPresent` is a normal absence (the rule is unconfigured); `NotUnicode` must
+/// surface rather than silently disable the rule, per CLAUDE.md invariant 3 and the
+/// 2026-11-25 adversarial review of slice 0017 (finding 3).
+fn read_reviewers_env(result: Result<String, VarError>) -> Result<Option<String>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(VarError::NotPresent) => Ok(None),
+        Err(VarError::NotUnicode(_)) => Err(anyhow!(
+            "CONTRIBUTRON_REVIEWERS is not valid UTF-8; refusing to silently disable \
+             the review-requested rule (ADR-0013)"
+        )),
+    }
 }
 
 /// The env-var side of [`resolve_reviewers`], split out so unit tests can pass the env
 /// value directly rather than mutating the process environment (the workspace forbids
 /// `unsafe_code`, and `std::env::set_var` became `unsafe` in edition 2024).
+///
+/// Both the flag entries and the env-split entries are trimmed before validation, so a
+/// `--reviewer " alice"` is stored as `"alice"` and matches the provider's own trimming
+/// (2026-11-25 adversarial review of slice 0017, finding 4). `AuthorLogin::new` still
+/// rejects an entry that is empty or whitespace-only.
 fn resolve_reviewers_with_env(
     flag: Vec<String>,
     env_value: Option<&str>,
@@ -709,7 +700,7 @@ fn resolve_reviewers_with_env(
             None => Vec::new(),
         }
     } else {
-        flag
+        flag.into_iter().map(|s| s.trim().to_owned()).collect()
     };
     let mut out: Vec<AuthorLogin> = Vec::with_capacity(raw.len());
     for login in raw {
@@ -769,8 +760,12 @@ fn parse_target(raw: &str) -> Result<PullRequestLocator, String> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod parse_target_tests {
     use super::{
-        MAX_INTERVAL_SECS, parse_target, resolve_reviewers_with_env, validate_interval_secs,
+        MAX_INTERVAL_SECS, parse_target, read_reviewers_env, resolve_reviewers_with_env,
+        validate_interval_secs,
     };
+    use std::env::VarError;
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt as _;
     use std::time::Duration;
 
     #[test]
@@ -810,6 +805,44 @@ mod parse_target_tests {
         let got = resolve_reviewers_with_env(Vec::new(), Some(",alice, ,bob,")).expect("resolve");
         let names: Vec<String> = got.iter().map(|r| r.as_str().to_owned()).collect();
         assert_eq!(names, vec!["alice", "bob"]);
+    }
+
+    #[test]
+    fn flag_entries_are_trimmed_before_validation() {
+        // 2026-11-25 adversarial review finding 4: before the fix, " alice" passed
+        // `AuthorLogin::new` (non-empty after a `trim` check) but was stored with its
+        // leading space, which GitHub then rejects with 422 on every request. The flag
+        // side now trims the way the env side already did.
+        let got = resolve_reviewers_with_env(vec!["  alice  ".to_owned(), " bob".to_owned()], None)
+            .expect("resolve");
+        let names: Vec<String> = got.iter().map(|r| r.as_str().to_owned()).collect();
+        assert_eq!(names, vec!["alice", "bob"]);
+    }
+
+    #[test]
+    fn env_var_not_present_resolves_to_none() {
+        let got = read_reviewers_env(Err(VarError::NotPresent)).expect("not present");
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn env_var_valid_utf8_passes_through() {
+        let got = read_reviewers_env(Ok("alice,bob".to_owned())).expect("valid utf-8");
+        assert_eq!(got.as_deref(), Some("alice,bob"));
+    }
+
+    #[test]
+    fn env_var_not_unicode_fails_loud() {
+        // 2026-11-25 adversarial review finding 3: a non-UTF-8 env value used to be
+        // collapsed to None by `.ok()`, silently disabling the rule. It now surfaces as
+        // an explicit error naming the invariant.
+        let bad = OsString::from_vec(vec![0xff, 0xfe, 0xfd]);
+        let e = read_reviewers_env(Err(VarError::NotUnicode(bad))).expect_err("not unicode");
+        let msg = e.to_string();
+        assert!(
+            msg.contains("not valid UTF-8"),
+            "message should name the invariant, got: {msg}",
+        );
     }
 
     #[test]

@@ -228,3 +228,56 @@ Deviations from the Design, in order of relevance:
    `unsafe` in edition 2024; the env-reading side is covered by the `resolve_reviewers`
    wrapper, which has a single `std::env::var` call site. This is the standard pattern
    for env-facing boundary code under the forbid.
+
+## Amendment — 2026-11-25: adversarial review corrections
+
+The 2026-11-25 adversarial review of this slice produced five corrections, shipped in the
+commit that follows the As-built freeze. The design claims in the sections above remain as
+written; the corrections below describe what shipped in the amending commit without
+rewriting the original prose (stele:ADR-0019).
+
+1. **DraftHistory walk removed (finding 2, important).** The design named a `DraftHistory`
+   trait that let the rule read the last stored draft flag when the in-memory `prior` was
+   `None`. The walk could never change the gate: `poll::apply_fetch_to_store` writes the
+   new observation to the store *before* invoking the reactor, so `latest_for_number`
+   returns the current observation itself. The unit test that "proved" the walk worked
+   used a fake that the real store cannot produce. The fresh-task-after-restart case the
+   walk was meant to cover is already handled one layer up, in `open_store_and_seed_prior`,
+   which seeds `prior` from the store before the first tick. The trait, its CLI bridge
+   `StoreDraftHistory`, and the `None` arm in `is_draft_to_ready_transition` are deleted;
+   `prior == None` now returns `NotApplicable` directly. The test
+   `walks_history_when_prior_is_none` is deleted and `not_applicable_when_history_is_empty`
+   is renamed to `not_applicable_when_prior_is_none` with the fake history removed. The
+   end-to-end `missing_token_fails_loud` arm and the slice-6 end-to-end case drop their
+   `DraftHistoryWasDraft` fixture for the same reason.
+
+2. **CONTRIBUTRON_REVIEWERS NotUnicode fails loud (finding 3, important).** The env-var
+   read used `.ok()`, which collapses `VarError::NotUnicode` into `None` and silently
+   disables the rule. The read is now routed through `read_reviewers_env`, which maps
+   `NotPresent` to `Ok(None)`, valid UTF-8 to `Ok(Some(_))`, and `NotUnicode(_)` to a
+   named error citing ADR-0013. Three new unit tests exercise all three arms.
+
+3. **PR author skipped from configured reviewers (finding 1, important).** GitHub rejects
+   a `request_reviewers` call that names the PR author with 422, failing the whole
+   batched write and parking the tick for a retry loop. `react_review_requested` now
+   filters `new.author` out of the missing set before calling `request_reviewers`.
+   Comparison is case-insensitive (ties to finding 5). Two new tests:
+   `skips_pr_author_from_configured_reviewers` and
+   `already_settled_when_only_candidate_is_the_pr_author`.
+
+4. **Flag entries are trimmed (finding 4, nit).** The env-side value was trimmed before
+   validation, but a `--reviewer " alice"` was stored with its leading space, which the
+   provider then rejects. Trimming is now applied to the flag side too. The remaining
+   `AuthorLogin` constructor boundary gap (reject whitespace-only, but preserve
+   whitespace-padded input) is ledgered.
+
+5. **Case-insensitive login comparison (finding 5, nit).** GitHub logins are ASCII and
+   case-insensitive on the provider side; `missing_reviewers` now compares with
+   `eq_ignore_ascii_case` so a configured `Alice` matches a present `alice`. The new
+   `case_insensitive_against_present_reviewers` test covers this directly, and the
+   finding-1 regression test exercises it on the author side.
+
+The review also surfaced two design follow-ups that are out of scope for the amending
+commit and are ledgered: splitting `request_reviewers` into per-login calls so one bad
+entry does not block the rest, and a circuit-breaker on non-transient reactor errors so a
+permanent 422 or 403 does not re-run every interval forever.

@@ -23,8 +23,8 @@ use contributron_domain::actor::{UserId, WorkerId};
 use contributron_domain::pull_request::{AuthorLogin, Label, Mergeable};
 use contributron_poll::PullRequestLocator;
 use contributron_react::{
-    ClientFuture, DraftHistory, ExistingComment, MergeableHistory, ProviderClient, ProviderError,
-    ReactError, react, react_needs_rebase_label, react_review_requested,
+    ClientFuture, ExistingComment, MergeableHistory, ProviderClient, ProviderError, ReactError,
+    react, react_needs_rebase_label, react_review_requested,
 };
 use std::sync::Mutex;
 
@@ -109,17 +109,6 @@ impl ProviderClient for NoCredentialClient {
     ) -> ClientFuture<'a, ()> {
         self.calls.lock().expect("calls").push("request_reviewers");
         Box::pin(async { Err(ProviderError::Client(MISSING_CREDENTIAL.to_owned())) })
-    }
-}
-
-/// A trivial [`DraftHistory`] that says the stored prior was draft. Used by the slice 0017
-/// write-path test so the transition gate sees draft→ready without walking any store.
-#[derive(Debug, Default)]
-struct DraftHistoryWasDraft;
-
-impl DraftHistory for DraftHistoryWasDraft {
-    fn last_draft(&self, _locator: &PullRequestLocator) -> Result<Option<bool>, String> {
-        Ok(Some(true))
     }
 }
 
@@ -275,7 +264,6 @@ async fn review_requested_without_a_credential_errors_before_any_write() {
     let owner = UserId::new("alice");
     let worker = WorkerId::new("poll");
     let loc = locator();
-    let history = DraftHistoryWasDraft;
     let prior = pr_with_draft(true);
     let new = pr_with_draft(false);
     let reviewers = vec![login("reviewer-one")];
@@ -286,7 +274,6 @@ async fn review_requested_without_a_credential_errors_before_any_write() {
         &loc,
         Some(&prior),
         &new,
-        &history,
         &client,
         &reviewers,
     )
@@ -311,7 +298,6 @@ async fn review_requested_without_a_transition_does_not_touch_the_client() {
     let owner = UserId::new("alice");
     let worker = WorkerId::new("poll");
     let loc = locator();
-    let history = DraftHistoryWasDraft;
     let new = pr_with_draft(false);
     let reviewers = vec![login("reviewer-one")];
 
@@ -323,7 +309,6 @@ async fn review_requested_without_a_transition_does_not_touch_the_client() {
         &loc,
         Some(&prior),
         &new,
-        &history,
         &client,
         &reviewers,
     )

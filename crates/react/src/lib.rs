@@ -20,7 +20,9 @@
 //! stays in `crates/github/` (invariant 1).
 
 use contributron_domain::actor::{AgentId, Attribution, ExecutingAgent, UserId, WorkerId};
-use contributron_domain::pull_request::{AuthorLogin, Label, Mergeable, ObservedPullRequest};
+use contributron_domain::pull_request::{
+    AuthorLogin, Label, Mergeable, ObservedPullRequest, PullRequestAuthor,
+};
 use contributron_poll::{PullRequestLocator, ReactionReport};
 use std::future::Future;
 use std::pin::Pin;
@@ -301,23 +303,6 @@ pub trait MergeableHistory: Send + Sync {
     fn latest_settled(&self, locator: &PullRequestLocator) -> Result<Option<Mergeable>, String>;
 }
 
-/// Access to the stored draft flag of the most recent observation of a pull request. Needed
-/// so that the review-requested rule (slice 0017) can decide a draft→ready transition
-/// even when the in-memory `prior` is `None` (fresh task after restart).
-///
-/// Draft is binary, so there is no `Unknown` to bridge, unlike [`MergeableHistory`]: a
-/// `None` result means the store has no row for the pull request at all.
-pub trait DraftHistory: Send + Sync {
-    /// The `draft` field of the most recent stored observation for this pull request, or
-    /// `Ok(None)` when the store has no row for it.
-    ///
-    /// # Errors
-    ///
-    /// Returns a reader-defined message when the store query failed. The react crate wraps
-    /// that into [`ReactError::History`] without reinterpreting it.
-    fn last_draft(&self, locator: &PullRequestLocator) -> Result<Option<bool>, String>;
-}
-
 /// Build the standard three-identity [`Attribution`] a rule records with every write.
 fn attribution_for(owner: &UserId, worker: &WorkerId, agent_id: &str) -> Attribution {
     Attribution {
@@ -583,27 +568,32 @@ fn needs_rebase_transition(
 /// # Errors
 ///
 /// Returns [`ReactError::Provider`] if listing requested reviewers or calling
-/// `request_reviewers` failed. Returns [`ReactError::History`] if the history walk failed.
-#[allow(clippy::too_many_arguments)]
+/// `request_reviewers` failed.
 pub async fn react_review_requested(
     owner: &UserId,
     worker: &WorkerId,
     locator: &PullRequestLocator,
     prior: Option<&ObservedPullRequest>,
     new: &ObservedPullRequest,
-    history: &dyn DraftHistory,
     client: &dyn ProviderClient,
     reviewers: &[AuthorLogin],
 ) -> Result<ReactionOutcome, ReactError> {
     if reviewers.is_empty() {
         return Ok(ReactionOutcome::NotApplicable);
     }
-    if !is_draft_to_ready_transition(locator, prior, new, history)? {
+    if !is_draft_to_ready_transition(prior, new) {
         return Ok(ReactionOutcome::NotApplicable);
     }
 
     let present = client.list_requested_reviewers(locator).await?;
-    let missing = missing_reviewers(reviewers, &present);
+    let mut missing = missing_reviewers(reviewers, &present);
+    // 2026-11-25 adversarial review finding 1: GitHub rejects a review request that names
+    // the PR author with 422, which fails the whole batched call and parks the tick for a
+    // retry-forever loop. Drop the author here so the rest of the configured list still
+    // gets asked. Case-insensitive because GitHub logins are ASCII-insensitive.
+    if let PullRequestAuthor::Account { login } = &new.author {
+        missing.retain(|r| !r.as_str().eq_ignore_ascii_case(login.as_str()));
+    }
     if missing.is_empty() {
         return Ok(ReactionOutcome::AlreadySettled);
     }
@@ -618,37 +608,45 @@ pub async fn react_review_requested(
 }
 
 /// Qualifying transition for the review-requested rule: the new observation is ready
-/// (`draft == false`) and the effective prior was draft (`draft == true`). The effective
-/// prior comes from the in-memory `prior`, or from the history walk when the in-memory
-/// value is absent (fresh task after restart). None history => no transition evidenced
-/// => `NotApplicable`.
+/// (`draft == false`) and the in-memory prior was draft (`draft == true`).
+///
+/// A `None` prior means the task has no stored row for this pull request yet: no
+/// transition can be evidenced from a single observation, so the rule reports
+/// `NotApplicable` and waits. The restart case is covered one layer up, in
+/// `open_store_and_seed_prior`, which seeds `prior` from the store before the first tick;
+/// a per-tick history walk through `latest_for_number` would read the current observation
+/// itself (poll writes `new` to the store before invoking the reactor) and so could never
+/// change this gate's outcome. Removing it was finding 2 of the 2026-11-25 adversarial
+/// review of slice 0017.
 fn is_draft_to_ready_transition(
-    locator: &PullRequestLocator,
     prior: Option<&ObservedPullRequest>,
     new: &ObservedPullRequest,
-    history: &dyn DraftHistory,
-) -> Result<bool, ReactError> {
+) -> bool {
     if new.draft {
-        return Ok(false);
+        return false;
     }
-    let was_draft = match prior {
+    match prior {
         Some(p) => p.draft,
-        None => match history.last_draft(locator).map_err(ReactError::History)? {
-            Some(d) => d,
-            None => return Ok(false),
-        },
-    };
-    Ok(was_draft)
+        None => false,
+    }
 }
 
 /// The subset of `configured` whose logins are not already on `present`. Preserves the
-/// input order and deduplicates: if the operator configured the same login twice, the rule
-/// requests it once.
+/// input order and deduplicates.
+///
+/// Comparison is case-insensitive because GitHub logins are ASCII and case-insensitive
+/// on the provider side. A case-sensitive compare would report `Alice` as missing when
+/// `alice` is already requested, producing a false `Posted` audit entry and a duplicate
+/// request (2026-11-25 adversarial review of slice 0017, finding 5).
 fn missing_reviewers(configured: &[AuthorLogin], present: &[AuthorLogin]) -> Vec<AuthorLogin> {
     let mut out: Vec<AuthorLogin> = Vec::new();
     for reviewer in configured {
-        let already_out = out.iter().any(|r| r == reviewer);
-        let already_present = present.iter().any(|r| r == reviewer);
+        let already_out = out
+            .iter()
+            .any(|r| r.as_str().eq_ignore_ascii_case(reviewer.as_str()));
+        let already_present = present
+            .iter()
+            .any(|r| r.as_str().eq_ignore_ascii_case(reviewer.as_str()));
         if !already_out && !already_present {
             out.push(reviewer.clone());
         }
