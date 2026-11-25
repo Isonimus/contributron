@@ -83,12 +83,6 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
   end-to-end even though slice 0014 scenario 5 asserts the read path keeps working. The
   CLI half (`list`, token resolution) does keep working; the network half does not. Add an
   anonymous `octocrab` constructor and plumb it through (ADR-0013).
-- [feature] Paginate PR issue comments in `GitHubClient::list_comments`. The marker scan
-  reads the first 100 comments only (`COMMENT_PAGE_SIZE` in `crates/github/src/client.rs`),
-  matching capture's single-page review-thread pull. A pull request with more than 100
-  comments whose marker sits past page 1 will be re-posted on restart, breaking the
-  idempotency guarantee of slice 0014 scenario 4 for that corner. Paginate until the marker
-  is found or the stream ends (ADR-0001).
 - [feature] Fail loud when the GraphQL `pullRequest.mergeable` field is absent from the
   payload (not when it is present and null; null is legitimate "computing" state). The
   normalizer currently maps missing → [`Mergeable::Unknown`] via serde's `Option<Mergeable>`,
@@ -97,19 +91,6 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
   deserializer that distinguishes "field absent" from "field null", and route the former to
   a field-named `NormalizeError::MissingField`. Found by the 2026-11-25 adversarial review
   of slice 0015 (finding 6) (ADR-0001).
-- [feature] Paginate PR requested reviewers in `GitHubClient::list_requested_reviewers`. The
-  slice-0017 rule reads the first page only (same `.per_page(COMMENT_PAGE_SIZE)` shape as
-  `list_labels`), so on a PR with more than one page of already-requested reviewers the rule
-  may re-request a reviewer that sits past page 1. Low impact (the provider deduplicates on
-  the server), but the symptom is a user-visible GitHub notification storm on the rare case.
-  Same bug class as the ledgered `list_labels`, `list_comments` and `reviewThreads`
-  pagination items (ADR-0001).
-- [feature] Paginate PR labels in `GitHubClient::list_labels`. The membership check reads the
-  first page only (`.per_page(COMMENT_PAGE_SIZE)` in `crates/github/src/client.rs`), so on a
-  PR with more than one page of labels the slice-0016 rule can miss `needs-rebase` sitting on
-  page 2: Apply re-adds harmlessly, Remove reports `AlreadySettled` and the stale label stays.
-  Same bug class as the ledgered `list_comments` pagination item. Found by the 2026-11-25
-  adversarial review of slice 0016 (finding 4) (ADR-0001).
 - [bug] `GitHubClient::list_labels` silently drops provider labels that fail
   `Label::new` via `filter_map(|l| Label::new(l.name).ok())` in `crates/github/src/client.rs`,
   which swallows a normalization error against the fail-loud rule. Low blast radius because
@@ -137,13 +118,6 @@ open that corpus, so it skips qualified references (stele:ADR-0009).
   escalate the locator (e.g. a `Failed` ledger entry on the persisted reaction row, slice
   TBD) or back off exponentially instead of the fixed per-target interval. Found by the
   2026-11-25 adversarial review of slice 0017 (finding 1) (ADR-0012).
-- [feature] Paginate `reviewThreads`. A capture reads the first 100 threads
-  (`THREAD_PAGE_SIZE` in `crates/github/src/capture.rs`), and a pull request with more cannot
-  be observed at all: the normalizer refuses a payload whose `pageInfo.hasNextPage` is true
-  rather than record an observation that omits the rest. Refusing is correct and it is not
-  sufficient, because such a pull request is now invisible instead of half-visible. The
-  silent-truncation half was found by adversarial review on 2026-11-23 and fixed; this line
-  is the remaining work.
 
 ## Resolved
 

@@ -15,13 +15,12 @@ use contributron_domain::pull_request::{AuthorLogin, Label};
 use contributron_poll::PullRequestLocator;
 use contributron_react::{ClientFuture, ExistingComment, ProviderClient, ProviderError};
 
-/// How many existing comments the marker scan reads.
+/// GitHub's maximum page size on the issues and labels endpoints.
 ///
-/// A hundred is GitHub's maximum page size. For the first slice that reads existing
-/// comments, a single page matches the capture crate's single-page pull of review threads
-/// (the same ledger item covers both deferrals). A pull request with more than a hundred
-/// general comments would let a duplicate slip past the scan; the ledger carries the
-/// pagination item that closes this gap.
+/// A hundred is the per-request page size; the reader walks pages via
+/// [`octocrab::Octocrab::all_pages`] until the Link header has no `next`, so the total
+/// read is unbounded by this constant. Picking the largest page keeps the walk to one
+/// round trip on the common case where the PR has fewer than a hundred items.
 const COMMENT_PAGE_SIZE: u8 = 100;
 
 /// A credentialed GitHub client this crate hands the reactor.
@@ -72,8 +71,12 @@ impl ProviderClient for GitHubClient {
                 .send()
                 .await
                 .map_err(|e| ProviderError::Client(format!("listing comments: {e}")))?;
-            Ok(page
-                .items
+            let all = self
+                .inner
+                .all_pages(page)
+                .await
+                .map_err(|e| ProviderError::Client(format!("listing comments: {e}")))?;
+            Ok(all
                 .into_iter()
                 .map(|c| ExistingComment {
                     body: c.body.unwrap_or_default(),
@@ -163,8 +166,12 @@ impl ProviderClient for GitHubClient {
                 .send()
                 .await
                 .map_err(|e| ProviderError::Client(format!("listing labels: {e}")))?;
-            Ok(page
-                .items
+            let all = self
+                .inner
+                .all_pages(page)
+                .await
+                .map_err(|e| ProviderError::Client(format!("listing labels: {e}")))?;
+            Ok(all
                 .into_iter()
                 .filter_map(|l| Label::new(l.name).ok())
                 .collect())
@@ -214,10 +221,12 @@ impl ProviderClient for GitHubClient {
     /// than silently dropped: finding 3 of the 2026-11-25 review (different site, same
     /// rule).
     ///
-    /// Single-page read: a pull request with more than one page of requested reviewers
-    /// (`per_page == 100`) will have its tail of reviewers hidden. The ledger carries the
-    /// pagination item alongside the pre-existing `list_labels` and `list_comments`
-    /// deferrals.
+    /// The GitHub endpoint `GET /pulls/{n}/requested_reviewers` is not paginated: it
+    /// returns `{users, teams}` as a single object and the Link header carries no
+    /// `next`. The ledger item that treated this as a parallel to the issues-endpoint
+    /// pagination was derived from the shape of the sibling methods, not from this
+    /// endpoint's behaviour; it is closed by evidence rather than by a walk that would
+    /// not do anything (slice 0021).
     fn list_requested_reviewers<'a>(
         &'a self,
         locator: &'a PullRequestLocator,
